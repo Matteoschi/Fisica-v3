@@ -49,14 +49,14 @@ class GameObject:
         self.range_sensore_alt = 20
 
     def draw(self, rectangles):
-        # Disegna il drone
-        
+        # Disegna le coordinate
         label = font.render(f"X:{round(self.x,1)} Y:{round(self.y,1)} Z:{round(self.z,1)}", True, WHITE)
         screen.blit(label, (10, 10))
 
         # Ciclo sui sensori
         for i in range(self.n_sensori):
             angolo = 2 * math.pi * i / self.n_sensori  # angolo in radianti
+
             # Lunghezza massima del sensore
             fine_x = self.x + self.range_sensore * math.cos(angolo)
             fine_y = self.y + self.range_sensore * math.sin(angolo)
@@ -71,13 +71,14 @@ class GameObject:
             for rettangolo in rectangles:
                 collision_x, collision_y = punto_collisione(self, rettangolo, angolo)
                 distanza_collisione = math.hypot(collision_x - self.x, collision_y - self.y)
+
                 if distanza_collisione < distanza_min:
                     distanza_min = int(distanza_collisione)
                     collision_min_x = collision_x
                     collision_min_y = collision_y
+
                     if distanza_min < 50:
                         colore_linea = RED  # ostacolo rilevato
-
 
             fine_x, fine_y = collision_min_x, collision_min_y
 
@@ -86,18 +87,6 @@ class GameObject:
                 label = font.render(f"{distanza_min}", True, WHITE)
                 screen.blit(label, (fine_x, fine_y))
 
-            proporzione = distanza_min / self.range_sensore
-            rosso = int((1 - proporzione) * 255)
-            verde = int(proporzione * 255)
-            colore_linea = (rosso, verde, 0)
-
-            pygame.draw.line(screen, colore_linea, (1161,91), (1161 + distanza_min *math.cos(angolo), 91 +distanza_min* math.sin(angolo)), 2)
-
-            label = font.render(f"{distanza_min}", True, WHITE)
-            screen.blit(label, (1161 + distanza_min *math.cos(angolo), 91 +distanza_min* math.sin(angolo)))
-
-
-            if Sensori == True:
                 if i == 0:
                     if distanza_min < self.range_sensore:
                         label = font.render(f"Ostacolo davanti : {distanza_min}", True, RED)
@@ -152,16 +141,23 @@ class GameObject:
                             self.x -= protezione
                             self.y += protezione
             
+            # Calcola il colore in base alla distanza per minischermo
+            proporzione = distanza_min / self.range_sensore
+            rosso = int((1 - proporzione) * 255)
+            verde = int(proporzione * 255)
+            colore_linea = (rosso, verde, 0)
 
+            # Disegna il sensore sul minischermo
+            pygame.draw.line(screen, colore_linea, (1161,91), (1161 + distanza_min *math.cos(angolo), 91 +distanza_min* math.sin(angolo)), 2)
+            label = font.render(f"{distanza_min}", True, WHITE)
+            screen.blit(label, (1161 + distanza_min *math.cos(angolo), 91 +distanza_min* math.sin(angolo)))
+
+        # Disegna il drone
         pygame.draw.circle(screen, self.colore, (int(self.x), int(self.y)), 10)
 
+        #disegna drone minischermo
         pygame.draw.circle(screen, WHITE, (1161,91), 10)
         
-
-
-
-
-
     def move(self):
         self.x += self.Vx
         self.y += self.Vy
@@ -181,7 +177,6 @@ class GameObject:
 
 drone = GameObject(20,35,0,1,WHITE)
 
-
 def punto_collisione(drone, rect, angolo):
     distanza_min = drone.range_sensore
     fine_x = drone.x + drone.range_sensore * math.cos(angolo)
@@ -191,27 +186,31 @@ def punto_collisione(drone, rect, angolo):
     for t in range(0, drone.range_sensore):
         px = drone.x + t * math.cos(angolo)
         py = drone.y + t * math.sin(angolo)
+
         if rect[0] <= px <= rect[0]+rect[2] and rect[1] <= py <= rect[1]+rect[3]:
             distanza_min = t
             break  # fermati al primo ostacolo
+
+    # Sensore altitudine
     if rect[0] <= drone.x <= rect[0]+rect[2] and rect[1] <= drone.y <= rect[1]+rect[3] and drone.z > rect[5]:
         sensore_sotto = drone.z - rect[5]
-        if sensore_sotto < drone.range_sensore_alt :
-            label = font.render(f"ostacolo sotto : {int(sensore_sotto)}", True, RED)
-            screen.blit(label, (1079, 325))
-        if sensore_sotto < drone.range_sensore_alt-10:
-            drone.z += 1
-            label = font.render(f"ostacolo sotto vicino : {int(sensore_sotto)}", True, RED)
-            screen.blit(label, (1079, 325))
-        
+
+        if Sensori == True:
+            if sensore_sotto < drone.range_sensore_alt :
+                label = font.render(f"ostacolo sotto : {int(sensore_sotto)}", True, RED)
+                screen.blit(label, (1079, 325))
+
+            if sensore_sotto < drone.range_sensore_alt-10:
+                drone.z += protezione
+                label = font.render(f"ostacolo sotto vicino : {int(sensore_sotto)}", True, RED)
+                screen.blit(label, (1079, 325))
+    # altezza del drone con rettangolo
     if drone.z <= rect[5]:
         fine_collisione_x = drone.x + distanza_min * math.cos(angolo)
         fine_collisione_y = drone.y + distanza_min * math.sin(angolo)
         return fine_collisione_x, fine_collisione_y
     
     return fine_x, fine_y
-
-
 
 rectangles = [
     (50, 50, 100, 60, DARKBLUE , random.randint(20,75)),
@@ -226,7 +225,6 @@ rectangles = [
     (400, 500, 120, 60, PINK, random.randint(20,75))
 ]
 
-
 while running:
     screen.fill(BLACK)
     clock.tick(FPS)
@@ -235,18 +233,17 @@ while running:
         pygame.draw.rect(screen, i[4], (i[0], i[1], i[2], i[3]))
         label = font.render(f"H{i[5]}", True, WHITE)
 
-        # Coordina per centrare il testo
+        # Coordina per centrare il testo dei rettangoli
         text_rect = label.get_rect(center=(i[0] + i[2]//2, i[1] + i[3]//2))
 
         screen.blit(label, text_rect)
         
-
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_w:
-                drone.Vy -= 5  # inverti perché y aumenta verso il basso
+                drone.Vy -= 5  
             if event.key == pygame.K_s:
                 drone.Vy += 5
             if event.key == pygame.K_a:
@@ -257,12 +254,14 @@ while running:
                 drone.Vz -= 1
             if event.key == pygame.K_UP:
                 drone.Vz += 1
+
             if event.key == pygame.K_LSHIFT or event.key == pygame.K_RSHIFT:
                 Sensori = not Sensori  # Toggle sensori
                 if Sensori:
                     messaggio = "Sensori attivati" 
                 else:
-                    "Sensori disattivati" 
+                    messaggio = "Sensori disattivati" 
+
             if event.key == pygame.K_CAPSLOCK:
                 if Sensori == True:
                     if protezione == 2:
@@ -274,10 +273,6 @@ while running:
                 else:
                     messaggio = "Attiva i sensori prima di attivare la protezione"
 
-        # nel ciclo principale di disegno, subito prima di pygame.display.flip():
-
-                    
-            
         if event.type == pygame.KEYUP:
             if event.key in [pygame.K_w, pygame.K_s]:
                 drone.Vy = 0
@@ -288,10 +283,10 @@ while running:
     if messaggio:
         label = font.render(messaggio, True, WHITE)
         screen.blit(label, (1079, 340))
-    # Muovi il drone
+
+
     drone.move()
 
-    # Disegna il drone
     drone.draw(rectangles)
 
     pygame.display.flip()
