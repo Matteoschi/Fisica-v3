@@ -43,6 +43,7 @@ class GameObject:
         self.Vz=0
         self.range_sensore = 85  
         self.n_sensori = 8
+        self.range_sensore_alt = 20
 
     def draw(self, rectangles):
         # Disegna il drone
@@ -145,6 +146,7 @@ class GameObject:
 
 
 
+
     def move(self):
         self.x += self.Vx
         self.y += self.Vy
@@ -171,20 +173,28 @@ def punto_collisione(drone, rect, angolo):
     fine_y = drone.y + drone.range_sensore * math.sin(angolo)
 
     # Campioniamo punti lungo il sensore
-    for t in range(0, drone.range_sensore, 2):  # step più piccolo = più precisione
+    for t in range(0, drone.range_sensore):
         px = drone.x + t * math.cos(angolo)
         py = drone.y + t * math.sin(angolo)
         if rect[0] <= px <= rect[0]+rect[2] and rect[1] <= py <= rect[1]+rect[3]:
             distanza_min = t
             break  # fermati al primo ostacolo
+    if rect[0] <= drone.x <= rect[0]+rect[2] and rect[1] <= drone.y <= rect[1]+rect[3] and drone.z > rect[5]:
+        sensore_sotto = drone.z - rect[5]
+        if sensore_sotto < drone.range_sensore_alt :
+            label = font.render(f"ostacolo sotto : {int(sensore_sotto)}", True, RED)
+            screen.blit(label, (300, 15))
+        if sensore_sotto < drone.range_sensore_alt-10:
+            drone.z += 1
+            label = font.render(f"ostacolo sotto vicino : {int(sensore_sotto)}", True, RED)
+            screen.blit(label, (300, 15))
+        
     if drone.z <= rect[5]:
         fine_collisione_x = drone.x + distanza_min * math.cos(angolo)
         fine_collisione_y = drone.y + distanza_min * math.sin(angolo)
         return fine_collisione_x, fine_collisione_y
     
     return fine_x, fine_y
-
-
 
 
 
