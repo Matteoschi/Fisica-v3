@@ -5,9 +5,12 @@ import random
 
 pygame.init()
 
-SCREEN_WIDTH = 800
-SCREEN_HEIGHT = 600
+SCREEN_WIDTH = 1300
+SCREEN_HEIGHT = 720
 FPS = 60
+Sensori = False
+protezione = 0
+messaggio = ""
 
 WHITE   = (255, 255, 255)
 BLACK   = (0, 0, 0)
@@ -72,76 +75,88 @@ class GameObject:
                     distanza_min = int(distanza_collisione)
                     collision_min_x = collision_x
                     collision_min_y = collision_y
-                    colore_linea = RED  # ostacolo rilevato
+                    if distanza_min < 50:
+                        colore_linea = RED  # ostacolo rilevato
 
-            # Aggiorna la fine del sensore
+
             fine_x, fine_y = collision_min_x, collision_min_y
 
-            # Disegna la linea del sensore
+            if Sensori == True:
+                pygame.draw.line(screen, colore_linea, (self.x, self.y), (fine_x, fine_y), 2)
+                label = font.render(f"{distanza_min}", True, WHITE)
+                screen.blit(label, (fine_x, fine_y))
+
             proporzione = distanza_min / self.range_sensore
             rosso = int((1 - proporzione) * 255)
             verde = int(proporzione * 255)
             colore_linea = (rosso, verde, 0)
 
-            pygame.draw.line(screen, colore_linea, (self.x, self.y), (fine_x, fine_y), 2)
+            pygame.draw.line(screen, colore_linea, (1161,91), (1161 + distanza_min *math.cos(angolo), 91 +distanza_min* math.sin(angolo)), 2)
 
-            # Mostra la distanza del sensore
             label = font.render(f"{distanza_min}", True, WHITE)
-            screen.blit(label, (fine_x, fine_y))
-            if i == 0:
-                if distanza_min < self.range_sensore:
-                    label = font.render(f"Ostacolo davanti : {distanza_min}", True, RED)
-                    if distanza_min < 30:
-                        self.x -= 4.5
+            screen.blit(label, (1161 + distanza_min *math.cos(angolo), 91 +distanza_min* math.sin(angolo)))
 
-                    screen.blit(label, (650, 15))
-            if i == 4:
-                if distanza_min < self.range_sensore:
-                    label = font.render(f"Ostacolo dietro : {distanza_min}", True, RED)
-                    screen.blit(label, (650, 30))
-                    if distanza_min < 30:
-                        self.x += 4.5
-            if i == 2:
-                if distanza_min < self.range_sensore:
-                    label = font.render(f"Ostacolo a destra : {distanza_min}", True, RED)
-                    screen.blit(label, (650, 45))
-                    if distanza_min < 30:
-                        self.y -= 4.5
-            if i == 6:
-                if distanza_min < self.range_sensore:
-                    label = font.render(f"Ostacolo a sinistra : {distanza_min}", True, RED)
-                    screen.blit(label, (650, 60))
-                    if distanza_min < 30:
-                        self.y += 4.5
-            if i == 1:
-                if distanza_min < 50:
-                    label = font.render(f"Ostacolo basso-sinistra : {distanza_min}", True, RED)
-                    screen.blit(label, (475, 15))
-                    if distanza_min < 30:
-                        self.x -= 3
-                        self.y -= 3
-            if i == 3:
-                if distanza_min < 50:
-                    label = font.render(f"Ostacolo basso-sinistra : {distanza_min}", True, RED)
-                    screen.blit(label, (475, 30))
-                    if distanza_min < 30:
-                        self.x += 3
-                        self.y -= 3
-            if i == 5:
-                if distanza_min < 50:
-                    label = font.render(f"Ostacolo alto-sinistra : {distanza_min}", True, RED)
-                    screen.blit(label, (475, 45))
-                    if distanza_min < 30:
-                        self.x += 3
-                        self.y += 3
-            if i == 7:
-                if distanza_min < 50:
-                    label = font.render(f"Ostacolo alto-destra : {distanza_min}", True, RED)
-                    screen.blit(label, (475, 60))
-                    if distanza_min < 30:
-                        self.x -= 3
-                        self.y += 3
+
+            if Sensori == True:
+                if i == 0:
+                    if distanza_min < self.range_sensore:
+                        label = font.render(f"Ostacolo davanti : {distanza_min}", True, RED)
+                        if distanza_min < 30:
+                            self.x -= protezione
+
+                        screen.blit(label, (1079, 200))
+                if i == 4:
+                    if distanza_min < self.range_sensore:
+                        label = font.render(f"Ostacolo dietro : {distanza_min}", True, RED)
+                        screen.blit(label, (1079, 215))
+                        if distanza_min < 30:
+                            self.x += protezione
+                if i == 2:
+                    if distanza_min < self.range_sensore:
+                        label = font.render(f"Ostacolo a destra : {distanza_min}", True, RED)
+                        screen.blit(label, (1079, 230))
+                        if distanza_min < 30:
+                            self.y -= protezione
+                if i == 6:
+                    if distanza_min < self.range_sensore:
+                        label = font.render(f"Ostacolo a sinistra : {distanza_min}", True, RED)
+                        screen.blit(label, (1079, 245))
+                        if distanza_min < 30:
+                            self.y += protezione
+                if i == 1:
+                    if distanza_min < 50:
+                        label = font.render(f"Ostacolo basso-sinistra : {distanza_min}", True, RED)
+                        screen.blit(label, (1079, 265))
+                        if distanza_min < 30:
+                            self.x -= protezione
+                            self.y -= protezione
+                if i == 3:
+                    if distanza_min < 50:
+                        label = font.render(f"Ostacolo basso-sinistra : {distanza_min}", True, RED)
+                        screen.blit(label, (1079, 280))
+                        if distanza_min < 30:
+                            self.x += protezione
+                            self.y -= protezione
+                if i == 5:
+                    if distanza_min < 50:
+                        label = font.render(f"Ostacolo alto-sinistra : {distanza_min}", True, RED)
+                        screen.blit(label, (1079, 295))
+                        if distanza_min < 30:
+                            self.x += protezione
+                            self.y += protezione
+                if i == 7:
+                    if distanza_min < 50:
+                        label = font.render(f"Ostacolo alto-destra : {distanza_min}", True, RED)
+                        screen.blit(label, (1079, 310))
+                        if distanza_min < 30:
+                            self.x -= protezione
+                            self.y += protezione
+            
+
         pygame.draw.circle(screen, self.colore, (int(self.x), int(self.y)), 10)
+
+        pygame.draw.circle(screen, WHITE, (1161,91), 10)
+        
 
 
 
@@ -183,11 +198,11 @@ def punto_collisione(drone, rect, angolo):
         sensore_sotto = drone.z - rect[5]
         if sensore_sotto < drone.range_sensore_alt :
             label = font.render(f"ostacolo sotto : {int(sensore_sotto)}", True, RED)
-            screen.blit(label, (300, 15))
+            screen.blit(label, (1079, 325))
         if sensore_sotto < drone.range_sensore_alt-10:
             drone.z += 1
             label = font.render(f"ostacolo sotto vicino : {int(sensore_sotto)}", True, RED)
-            screen.blit(label, (300, 15))
+            screen.blit(label, (1079, 325))
         
     if drone.z <= rect[5]:
         fine_collisione_x = drone.x + distanza_min * math.cos(angolo)
@@ -242,6 +257,26 @@ while running:
                 drone.Vz -= 1
             if event.key == pygame.K_UP:
                 drone.Vz += 1
+            if event.key == pygame.K_LSHIFT or event.key == pygame.K_RSHIFT:
+                Sensori = not Sensori  # Toggle sensori
+                if Sensori:
+                    messaggio = "Sensori attivati" 
+                else:
+                    "Sensori disattivati" 
+            if event.key == pygame.K_CAPSLOCK:
+                if Sensori == True:
+                    if protezione == 2:
+                        protezione = 0
+                        messaggio = "Protezione disattivata"
+                    else:
+                        protezione = 2
+                        messaggio = "Protezione attivata"
+                else:
+                    messaggio = "Attiva i sensori prima di attivare la protezione"
+
+        # nel ciclo principale di disegno, subito prima di pygame.display.flip():
+
+                    
             
         if event.type == pygame.KEYUP:
             if event.key in [pygame.K_w, pygame.K_s]:
@@ -250,7 +285,9 @@ while running:
                 drone.Vx = 0
             if event.key in [pygame.K_UP, pygame.K_DOWN]:
                 drone.Vz = 0
-
+    if messaggio:
+        label = font.render(messaggio, True, WHITE)
+        screen.blit(label, (1079, 340))
     # Muovi il drone
     drone.move()
 
