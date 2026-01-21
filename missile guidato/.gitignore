@@ -1,0 +1,23 @@
+# Build C
+/build/
+*.o
+*.so
+*.dll
+*.exe
+
+# Python
+__pycache__/
+*.pyc
+
+# File locali
+.env
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Output simulazioni
+output/
+*.csv

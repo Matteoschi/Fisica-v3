@@ -1,5 +1,6 @@
-# 🚀 Simulazione Missilistica 3-DOF  
-**Dinamica a Massa Variabile & Guida Proporzionale (PN)**
+# 🚀 Simulazione Missilistica 3-DOF
+
+## Dinamica a Massa Variabile & Guida Proporzionale (PN)
 
 ![Status](https://img.shields.io/badge/Status-Stable-green) ![Physics](https://img.shields.io/badge/Physics-Newtonian-blue)
 
@@ -41,11 +42,12 @@ $$
 Il missile consuma propellente solido, riducendo la propria massa inerziale nel tempo (*burnout effect*).
 
 ### Fasi di volo
-- **Boost phase** ($t < t_{burn}$) → motore acceso  
+
+- **Boost phase** ($t < t_{burn}$) → motore acceso
 - **Coast phase** ($t \ge t_{burn}$) → volo balistico
 
 $$
-m(t) = 
+m(t) =
 \begin{cases} 
 m_{launch} - \dot{m} \cdot t & \text{se } t < t_{burn} \\
 m_{dry} & \text{se } t \ge t_{burn}
