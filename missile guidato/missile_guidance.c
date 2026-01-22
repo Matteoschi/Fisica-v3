@@ -8,14 +8,14 @@
 #define RAGGIO_PROSSIMITA 10.0        
 #define EPSILON 1e-6
 #define RHO_0 1.225         // Densità dell'aria a livello del mare (kg/m^3)
-#define SCALE_HEIGHT 8500.0 // L'aria diminuisce del 63% ogni 8500m (Costante di scala)
+#define SCALE_HEIGHT 8500.0 // L'aria diminuisce del 63% ogni 8500m 
 #define AREA_MISSILE 0.0314 // Area sezione frontale in m^2 (es. raggio 10cm -> pi*0.1^2)        
 
 double max_acc_strutturale = LIMIT_G_LOAD * G_ACCEL;
 
 // --- Funzioni ---
 
-double modulo_vettore(double vettore[3]) { 
+double modulo_vettore(double vettore[3]) { // pitagora in 3D
     return sqrt(vettore[0]*vettore[0] + vettore[1]*vettore[1] + vettore[2]*vettore[2]); 
 }
 
@@ -118,13 +118,19 @@ double aggiorna_missile(
     }
 
     // 4. Forze Fisiche
-    double speed_m = modulo_vettore(velM);
+    double modulo_velocità_missile = modulo_vettore(velM);
     double versore_velocità[3] = {1,0,0};
-    if (speed_m > EPSILON) {
-        for(int i=0; i<3; i++) versore_velocità[i] = velM[i] / speed_m; //normalizzando la velocità.
+    if (modulo_velocità_missile > EPSILON) {
+        for(int i=0; i<3; i++) 
+        {
+            versore_velocità[i] = velM[i] / modulo_velocità_missile; //normalizzando la velocità.
+        } 
     } else {
         // Se fermo al lancio, punta verso il target
-        for(int i=0; i<3; i++) versore_velocità[i] = vettore_LOS_normalizzato[i];
+        for(int i=0; i<3; i++)
+        { 
+            versore_velocità[i] = vettore_LOS_normalizzato[i];
+        }
     }
 
 // A. Drag Atmosferico (Densità variabile)
@@ -133,14 +139,13 @@ double aggiorna_missile(
     
     if (altitudine < 0){ 
         altitudine = 0; 
-    } // Non andiamo sotto il livello del mare
+    } 
     
     // Calcolo densità attuale: Rho = Rho0 * e^(-h/H)
     double densita_aria = RHO_0 * exp(-altitudine / SCALE_HEIGHT);
 
     // Formula Aerodinamica completa: Fd = 1/2 * rho * v^2 * Cd * A
-    // drag_coeff deve essere Cd puro 
-    double drag_force_mag = 0.5 * densita_aria * (speed_m * speed_m) * drag_coeff * AREA_MISSILE;
+    double drag_force_mag = 0.5 * densita_aria * (modulo_velocità_missile * modulo_velocità_missile) * drag_coeff * AREA_MISSILE;
     
     // B. Calcolo Accelerazione Totale 
     double acc_total[3];
@@ -157,14 +162,14 @@ double aggiorna_missile(
     }
     double g_load_val = modulo_vettore(accelerazione_comandata_legge_guida) / G_ACCEL; // G-Force
 
-    // === QUI RIEMPIAMO L'ARRAY PER PYTHON ===
-    // Assicuriamoci che non sia NULL per evitare crash
+    // passaggio dati output per debug analisi
     if (dati_output != NULL) {
-        dati_output[0] = drag_force_mag; // Indice 0: Drag
-        dati_output[1] = g_load_val;     // Indice 1: G-Force
-        dati_output[2] = densita_aria;   // Indice 2: Densità
-        dati_output[3] = massa_attuale;  // Indice 3: Massa
+        dati_output[0] = drag_force_mag; 
+        dati_output[1] = g_load_val;     
+        dati_output[2] = densita_aria;   
+        dati_output[3] = massa_attuale;  
     }
+
     // 5. Integrazione Eulero
     for(int i=0; i<3; i++) {
         velM[i] += acc_total[i] * dt;
