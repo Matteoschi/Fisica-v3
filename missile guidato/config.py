@@ -1,32 +1,32 @@
+
+DT = 0.005             
+MAX_STEPS = 4000       
 # ==========================================
-#  PANNELLO DI CONTROLLO SIMULAZIONE
+#  PARAMETRI FISICI (AIM-9M Sidewinder Data)
 # ==========================================
 
-DT = 0.01             
-MAX_STEPS = 2000       
+MASSA_TOTALE = 85.3       
+MASSA_PROPELLENTE = 28.0  
 
-# --- PARAMETRI FISICI (AIM-9 Sidewinder Like) ---
 
-# MASSA
-MASSA_TOTALE = 85.0       
-MASSA_PROPELLENTE = 28.0 
 
-# Il motore brucia tutto in 2.8 secondi 
-TEMPO_COMBUSTIONE = 2.8   # Secondi
+TEMPO_COMBUSTIONE = 2.2   
+SPINTA_MOTORE = 22000.0   
 
-SPINTA_MOTORE = 25000.0   # Newton 
 
-# AERODINAMICA
-DRAG_COEFF = 0.0035       
+DRAG_COEFF = 0.35         
 
-# --- START POSITIONS ---
-# Missile parte da zero
-MISSILE_POS = [2500, 0.0, 0.0]       
-MISSILE_VEL = [0.0, 0.0, 20.0] 
 
-# Target 
-TARGET_POS = [3000.0, 2000.0, 1500.0] 
-TARGET_VEL = [-300.0, 60.0, 50.0]    
+MISSILE_POS = [0.0, 0.0, 5000.0]       
 
-# Limiti grafici
-LIMITI_ASSI = [-500, 3000]
+
+MISSILE_VEL = [300.0, 0.0, 20.0] 
+
+
+TARGET_POS = [3500.0, 1000.0, 5000.0] 
+
+
+TARGET_VEL = [300.0, 200.0, 0.0]    
+
+
+LIMITI_ASSI = [-1000, 6000]
