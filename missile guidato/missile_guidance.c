@@ -12,6 +12,10 @@
 #define AREA_MISSILE 0.0314 // Area sezione frontale in m^2 (es. raggio 10cm -> pi*0.1^2)  
 #define GAMMA 1.4            // Indice adiabatico aria
 #define R_GAS 287.05         // Costante specifica gas aria J/(kg·K)     
+#define MAX_CL 1.2           // Coefficiente di portanza massimo stimato (limite stallo alette)
+#define INDUCED_DRAG_K 0.05   // Fattore resistenza indotta (efficienza alette)
+#define PRESSIONE_SEA_LEVEL 101325.0 // Pascal (Pa) standard a livello del mare
+#define AREA_UGELLO 0.0045 // Area ugello motore in m^2 (es. raggio 3.8cm -> pi*0.038^2)
  
 
 double max_acc_strutturale = LIMIT_G_LOAD * G_ACCEL;
@@ -112,31 +116,108 @@ void calcola_fisica_step(
         }
     }
 
-    // A. Drag Atmosferico (Densità variabile)
-    double altitudine = posM[2]; // Assumiamo che Z sia l'altitudine
-    if (altitudine < 0){ 
-        altitudine = 0; 
-    } 
-    
-    // Calcolo densità attuale: Rho = Rho0 * e^(-h/H)
+    // ==========================================
+    // A. CALCOLO PARAMETRI ATMOSFERICI
+    // ==========================================
+    double altitudine = posM[2]; 
+    if (altitudine < 0) altitudine = 0; 
+
+    // Formula Barometrica (approssimata): rho(h) = rho0 * e^(-h/H)
     double densita_aria = RHO_0 * exp(-altitudine / SCALE_HEIGHT);
 
+    // Gradiente Termico Verticale: T(h) = T0 - L*h
     double temperatura_kelvin = 288.15 - 0.0065 * altitudine; 
+    if (temperatura_kelvin < 50.0) temperatura_kelvin = 50.0;
+
+    // Velocità del suono (Gas ideale): a = sqrt(gamma * R * T)
     double speed_of_sound = sqrt(GAMMA * R_GAS * temperatura_kelvin);
+    
+    // Numero di Mach: M = v / a
     double mach_number = modulo_velocità_missile / speed_of_sound;
 
+    // Pressione Dinamica (Bernoulli): q = 1/2 * rho * v^2
+    double pressione_dinamica = 0.5 * densita_aria * modulo_velocità_missile * modulo_velocità_missile;
+
+
+    //F. EFFICIENZA MOTORE (Variazione Isp con Quota)
+
+    //  Calcolo Pressione Atmosferica Locale
+    // Legge dei Gas Ideali: P = rho * R * T
+    double pressione_locale = densita_aria * R_GAS * temperatura_kelvin;
+    double spinta_motore = spinta_attuale;
+    // se il motore è acceso 
+    if (spinta_attuale > EPSILON) {
+        double delta_pressione = PRESSIONE_SEA_LEVEL - pressione_locale;
+        double spinta_bonus = delta_pressione * AREA_UGELLO;
+        
+        spinta_motore = spinta_attuale + spinta_bonus;
+    }
+
+    // ==========================================
+    // C. COEFFICIENTE DRAG BASE (Cd0)
+    // ==========================================
+    // Resistenza d'onda 
     double mach_multiplier = 1.0;
     if (mach_number >= 0.8 && mach_number < 1.2) {
+        // Approssimazione picco resistenza transonica (Prandtl-Glauert singularity)
         mach_multiplier = 1.0 + (mach_number - 0.8) * 3.75; 
     } 
-    double current_cd = drag_coeff * mach_multiplier;
+    double cd_base = drag_coeff * mach_multiplier; // Questo è il Cd0
 
-    // Formula Aerodinamica completa: Fd = 1/2 * rho * v^2 * Cd * A
-    double drag_force_mag = 0.5 * densita_aria * (modulo_velocità_missile * modulo_velocità_missile) * current_cd * AREA_MISSILE;
+    // ==========================================
+    // D. LIMITATORE G-FORCE (Aerodinamica vs Struttura)
+    // ==========================================
+    
+    // Equazione della Portanza (allo stallo): L_max = q * S * CL_max
+    double max_forza_aero = pressione_dinamica * AREA_MISSILE * MAX_CL;
+    
+    // Seconda Legge di Newton: a_max = F_max / m
+    double max_acc_aerodinamica = max_forza_aero / massa_attuale;
+
+    // Il limite è il minimo tra la resistenza dei materiali e la portanza disponibile
+    double limite_reale = max_acc_strutturale;
+    if (max_acc_aerodinamica < max_acc_strutturale) {
+        limite_reale = max_acc_aerodinamica;
+    }
+    
+    if (guide_force > limite_reale) {
+        if (limite_reale < EPSILON) { // Nessuna capacità di virata
+            accelerazione_comandata_legge_guida[0] = 0;
+            accelerazione_comandata_legge_guida[1] = 0;
+            accelerazione_comandata_legge_guida[2] = 0;
+        } else {
+            double ratio = limite_reale / guide_force;
+            prodotto_vettore_scalare(accelerazione_comandata_legge_guida, ratio, accelerazione_comandata_legge_guida); //Saturazione vettoriale = acc * (max_acc / acc)
+        }
+    }
+
+    // ==========================================
+    // E. CALCOLO DRAG TOTALE (Polare Aerodinamica)
+    // ==========================================
+    
+    double cl_attuale = 0.0;
+    
+    if (pressione_dinamica > EPSILON) {
+        // a_req è l'accelerazione effettiva dopo il taglio del limitatore
+        double acc_virata_effettiva = modulo_vettore(accelerazione_comandata_legge_guida);
+        
+        // Newton: F_lift = m * a
+        double forza_lift_richiesta = massa_attuale * acc_virata_effettiva;
+        
+        // Equazione Portanza Inversa: CL = L / (q * S)
+        cl_attuale = forza_lift_richiesta / (pressione_dinamica * AREA_MISSILE);
+    }
+
+    // Polare Aerodinamica (Parabolica): Cd = Cd0 + k * CL^2
+    double cd_indotto = INDUCED_DRAG_K * (cl_attuale * cl_attuale);
+    double cd_totale = cd_base + cd_indotto;
+
+    // Equazione della Resistenza (Drag): D = q * S * Cd
+    double drag_force_mag = pressione_dinamica * AREA_MISSILE * cd_totale;
     
     // B. Calcolo Accelerazione Totale 
     for(int i=0; i<3; i++) {
-        double f_thrust = versore_velocità[i] * spinta_attuale; // Forza di spinta = Spinta * versore_velocità
+        double f_thrust = versore_velocità[i] * spinta_motore; // Forza di spinta = Spinta * versore_velocità
         double f_drag   = -versore_velocità[i] * drag_force_mag; // Forza di drag = -Versore_velocità * Drag_Mag (opppos)
         double f_grav   = (i == 2) ? -G_ACCEL * massa_attuale : 0.0; // Solo asse Z
         
@@ -147,13 +228,20 @@ void calcola_fisica_step(
         acc_out[i] += accelerazione_comandata_legge_guida[i];
     }
 
-    // Salvataggio dati output per debug analisi (solo se richiesto)
     if (dati_debug != NULL) {
         double g_load_val = modulo_vettore(accelerazione_comandata_legge_guida) / G_ACCEL; // G-Force
-        dati_debug[0] = drag_force_mag; 
-        dati_debug[1] = g_load_val;     
-        dati_debug[2] = densita_aria;   
-        dati_debug[3] = massa_attuale;  
+        dati_debug[0] = distanza;          // Distanza Target-Missile
+        dati_debug[1] = guide_force;        // guide_force
+        dati_debug[2] = densita_aria;      // Densità Aria Attuale
+        dati_debug[3]= temperatura_kelvin; // Temperatura Attuale
+        dati_debug[4]= mach_number;        // Numero di Mach Attuale
+        dati_debug[5]= pressione_dinamica;          // Pressione Dinamica Attuale
+        dati_debug[6]= pressione_locale;          // Pressione Atmosferica Attuale
+        dati_debug[7]= spinta_motore;          // Spinta Motore Attuale
+        dati_debug[8]=spinta_attuale;          // Spinta Motore Base
+        dati_debug[9]= cd_totale;          // Coefficiente Drag Totale
+        dati_debug[10]= cl_attuale;         // Coefficiente Lift Attuale
+
     }
 }
 

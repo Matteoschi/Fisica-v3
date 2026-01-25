@@ -45,7 +45,7 @@ libreria_motore_fisico.aggiorna_missile.argtypes = [
     ctypes.c_double,        # 11. Coeff Aero
     puntatore_array_double  # 12. Array Output
 ]
-dati_telemetria = (ctypes.c_double * 4)(0, 0, 0, 0)
+dati_telemetria = (ctypes.c_double * 11)(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # Array di 11 elementi per tutta la telemetria
 libreria_motore_fisico.aggiorna_missile.restype = ctypes.c_double 
 
 # ==============================================================================
@@ -82,7 +82,7 @@ try:
         "Tempo", "Distanza", 
         "Missile_X", "Missile_Y", "Missile_Z", "Vel_Totale",
         "Target_X", "Target_Y", "Target_Z", 
-        "Drag_N", "G_Load", "Fuel_kg"
+        "G_Load", "RHO_kg_m3", "Temperatura_K", "Mach", "Q_dinamica_Pa", "P_locale_Pa", "Spinta_N", "Cd_Totale", "Cl_Attuale", "Fuel_kg"
     ])
     print(f"[LOG] File CSV aperto: {percorso_file_csv}")
 except Exception as e:
@@ -112,6 +112,7 @@ for passo in range(numero_massimo_passi):
     vel_tot = math.sqrt(velocita_missile[0]**2 + velocita_missile[1]**2 + velocita_missile[2]**2)
 
     # 2. Chiamata al C
+    # Ritorna la distanza attuale; i dati dettagliati vanno in dati_telemetria
     distanza_attuale = libreria_motore_fisico.aggiorna_missile(
         posizione_missile, 
         velocita_missile, 
@@ -127,22 +128,51 @@ for passo in range(numero_massimo_passi):
         dati_telemetria
     )
     
-    # Lettura dati
-    valore_drag = dati_telemetria[0]
-    valore_g    = dati_telemetria[1]
-    # valore_rho = dati_telemetria[2]
-    valore_massa = dati_telemetria[3]
+    # Lettura dati telemetria da C:
+    # [0] = distanza (m) - Distanza Target-Missile
+    # [1] = guide_force (m/s²) - Accelerazione di guida Pro-Nav
+    # [2] = densita_aria (kg/m³) - Densità atmosferica corrente
+    # [3] = temperatura_kelvin (K) - Temperatura atmosferica
+    # [4] = mach_number - Numero di Mach attuale
+    # [5] = pressione_dinamica (Pa) - Pressione dinamica (bernoulli)
+    # [6] = pressione_locale (Pa) - Pressione atmosferica locale
+    # [7] = spinta_motore (N) - Spinta motore con bonus altitudine
+    # [8] = spinta_attuale (N) - Spinta motore nominale
+    # [9] = cd_totale - Coefficiente drag totale (parassite + indotto)
+    # [10] = cl_attuale - Coefficiente portanza attuale
+    
+    valore_distanza = dati_telemetria[0]   # Distanza Target-Missile (m)
+    valore_g_guida  = dati_telemetria[1]   # G-Force dalla guida Pro-Nav (m/s²)
+    valore_rho      = dati_telemetria[2]   # Densità aria (kg/m³)
+    valore_temp     = dati_telemetria[3]   # Temperatura (K)
+    valore_mach     = dati_telemetria[4]   # Numero di Mach
+    valore_q_dyn    = dati_telemetria[5]   # Pressione dinamica (Pa)
+    valore_p_loc    = dati_telemetria[6]   # Pressione locale (Pa)
+    valore_spinta   = dati_telemetria[7]   # Spinta motore reale (N)
+    valore_spinta_base = dati_telemetria[8]  # Spinta motore base (N)
+    valore_cd       = dati_telemetria[9]   # Cd totale
+    valore_cl       = dati_telemetria[10]  # Cl attuale
 
-    # Calcolo Fuel
-    fuel = valore_massa - massa_secca
-    if fuel < 0: fuel = 0
+    # Calcolo Fuel - ATTENZIONE: Nel C la massa viene calcolata ma NON salvata in dati_debug!
+    # Dovrai aggiungere questa info nel file C se vuoi stamparla
+    fuel = 0  # Placeholder
+    
+    # Per ora calcoliamo la massa dal tempo di combustione
+    if tempo_trascorso < config.TEMPO_COMBUSTIONE:
+        massa_attuale = config.MASSA_TOTALE - (config.MASSA_PROPELLENTE / config.TEMPO_COMBUSTIONE) * tempo_trascorso
+    else:
+        massa_attuale = config.MASSA_TOTALE - config.MASSA_PROPELLENTE
+    fuel = massa_attuale - massa_secca
 
     # SCRITTURA SU CSV
+    # Colonne: Tempo | Distanza | Pos Missile (X,Y,Z) | Vel Totale | Pos Target (X,Y,Z) | 
+    #          G_Load | RHO | Temperatura | Mach | Q_dinamica | P_locale | Spinta | Cd | Cl | Fuel
     writer.writerow([
-        f"{tempo_trascorso:.3f}", f"{distanza_attuale:.2f}",
+        f"{tempo_trascorso:.3f}", f"{valore_distanza:.2f}",
         f"{posizione_missile[0]:.2f}", f"{posizione_missile[1]:.2f}", f"{posizione_missile[2]:.2f}", f"{vel_tot:.2f}",
         f"{posizione_bersaglio[0]:.2f}", f"{posizione_bersaglio[1]:.2f}", f"{posizione_bersaglio[2]:.2f}",
-        f"{valore_drag:.2f}", f"{valore_g:.2f}", f"{fuel:.2f}"
+        f"{valore_g_guida:.2f}", f"{valore_rho:.6f}", f"{valore_temp:.2f}", f"{valore_mach:.3f}", 
+        f"{valore_q_dyn:.0f}", f"{valore_p_loc:.0f}", f"{valore_spinta:.0f}", f"{valore_cd:.4f}", f"{valore_cl:.4f}", f"{fuel:.2f}"
     ])
 
     # 3. Aggiorniamo il tempo
