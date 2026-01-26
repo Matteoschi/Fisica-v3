@@ -37,15 +37,18 @@ libreria_motore_fisico.aggiorna_missile.argtypes = [
     puntatore_array_double, # 3. Posizione Target
     puntatore_array_double, # 4. Velocità Target
     ctypes.c_double,        # 5. dt
-    ctypes.c_double,        # 6. Tempo
-    ctypes.c_double,        # 7. Massa Tot
-    ctypes.c_double,        # 8. Massa Fuel
-    ctypes.c_double,        # 9. Burn Time
-    ctypes.c_double,        # 10. Spinta
-    ctypes.c_double,        # 11. Coeff Aero
-    puntatore_array_double  # 12. Array Output
+    ctypes.c_double,        # 6. Tempo Corrente
+    ctypes.c_double,        # 7. Massa Totale Launch
+    ctypes.c_double,        # 8. Massa Carburante
+    ctypes.c_double,        # 9. Durata Motore
+    ctypes.c_double,        # 10. Massa a Vuoto
+    ctypes.POINTER(ctypes.c_double),  # 11. Puntatore Massa Fuel
+    ctypes.c_double,        # 12. Consumo kg/s
+    ctypes.c_double,        # 13. Spinta Nominale
+    ctypes.c_double,        # 14. Coeff Drag
+    puntatore_array_double  # 15. Array Output
 ]
-dati_telemetria = (ctypes.c_double * 11)(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # Array di 11 elementi per tutta la telemetria
+dati_telemetria = (ctypes.c_double * 14)(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # Array di 14 elementi per tutta la telemetria
 libreria_motore_fisico.aggiorna_missile.restype = ctypes.c_double 
 
 # ==============================================================================
@@ -61,6 +64,11 @@ tracciato_t_x, tracciato_t_y, tracciato_t_z = [], [], []
 
 passo_temporale = config.DT
 numero_massimo_passi = config.MAX_STEPS
+
+# Parametri aggiuntivi per il motore
+massa_a_vuoto = config.MASSA_TOTALE - config.MASSA_PROPELLENTE  # Massa secca
+massa_fuel_attuale = ctypes.c_double(config.MASSA_PROPELLENTE)   # Fuel rimasto (puntatore)
+consumo_kg_s = config.MASSA_PROPELLENTE / config.TEMPO_COMBUSTIONE  # Rateo di consumo
 
 # ==============================================================================
 # SETUP LOGGING CSV 
@@ -82,7 +90,7 @@ try:
         "Tempo", "Distanza", 
         "Missile_X", "Missile_Y", "Missile_Z", "Vel_Totale",
         "Target_X", "Target_Y", "Target_Z", 
-        "G_Load", "RHO_kg_m3", "Temperatura_K", "Mach", "Q_dinamica_Pa", "P_locale_Pa", "Spinta_N", "Cd_Totale", "Cl_Attuale", "Fuel_kg"
+        "guide_force", "Densità_Aria_kg_m3", "Temperatura_Kelvin", "Temp_Ristagno_K", "Mach", "Pressione_Dinamica_Pa", "Pressione_Locale_Pa", "Spinta_Motore_N", "Spinta_Base_N", "Cd_Totale", "Cl_Attuale", "Fuel_kg"
     ])
     print(f"[LOG] File CSV aperto: {percorso_file_csv}")
 except Exception as e:
@@ -123,6 +131,9 @@ for passo in range(numero_massimo_passi):
         ctypes.c_double(config.MASSA_TOTALE),
         ctypes.c_double(config.MASSA_PROPELLENTE),
         ctypes.c_double(config.TEMPO_COMBUSTIONE),
+        ctypes.c_double(massa_a_vuoto),
+        ctypes.byref(massa_fuel_attuale),
+        ctypes.c_double(consumo_kg_s),
         ctypes.c_double(config.SPINTA_MOTORE),
         ctypes.c_double(config.DRAG_COEFF),
         dati_telemetria
@@ -133,46 +144,42 @@ for passo in range(numero_massimo_passi):
     # [1] = guide_force (m/s²) - Accelerazione di guida Pro-Nav
     # [2] = densita_aria (kg/m³) - Densità atmosferica corrente
     # [3] = temperatura_kelvin (K) - Temperatura atmosferica
-    # [4] = mach_number - Numero di Mach attuale
-    # [5] = pressione_dinamica (Pa) - Pressione dinamica (bernoulli)
-    # [6] = pressione_locale (Pa) - Pressione atmosferica locale
-    # [7] = spinta_motore (N) - Spinta motore con bonus altitudine
-    # [8] = spinta_attuale (N) - Spinta motore nominale
-    # [9] = cd_totale - Coefficiente drag totale (parassite + indotto)
-    # [10] = cl_attuale - Coefficiente portanza attuale
+    # [4] = temperatura_ristagno (K) - Temperatura di ristagno (stagnation)
+    # [5] = numero_di_mach - Numero di Mach attuale
+    # [6] = pressione_dinamica (Pa) - Pressione dinamica (bernoulli)
+    # [7] = pressione_locale (Pa) - Pressione atmosferica locale
+    # [8] = spinta_motore_totale (N) - Spinta motore con bonus altitudine
+    # [9] = spinta_attuale (N) - Spinta motore nominale
+    # [10] = cd_totale - Coefficiente drag totale (parassite + indotto)
+    # [11] = cl_attuale - Coefficiente portanza attuale
+    # [12] = (riservato)
+    # [13] = (riservato)
     
     valore_distanza = dati_telemetria[0]   # Distanza Target-Missile (m)
     valore_g_guida  = dati_telemetria[1]   # G-Force dalla guida Pro-Nav (m/s²)
     valore_rho      = dati_telemetria[2]   # Densità aria (kg/m³)
     valore_temp     = dati_telemetria[3]   # Temperatura (K)
-    valore_mach     = dati_telemetria[4]   # Numero di Mach
-    valore_q_dyn    = dati_telemetria[5]   # Pressione dinamica (Pa)
-    valore_p_loc    = dati_telemetria[6]   # Pressione locale (Pa)
-    valore_spinta   = dati_telemetria[7]   # Spinta motore reale (N)
-    valore_spinta_base = dati_telemetria[8]  # Spinta motore base (N)
-    valore_cd       = dati_telemetria[9]   # Cd totale
-    valore_cl       = dati_telemetria[10]  # Cl attuale
+    valore_temp_ristagno = dati_telemetria[4]  # Temperatura di ristagno (K)
+    valore_mach     = dati_telemetria[5]   # Numero di Mach
+    valore_q_dyn    = dati_telemetria[6]   # Pressione dinamica (Pa)
+    valore_p_loc    = dati_telemetria[7]   # Pressione locale (Pa)
+    valore_spinta   = dati_telemetria[8]   # Spinta motore reale (N)
+    valore_spinta_base = dati_telemetria[9]  # Spinta motore base (N)
+    valore_cd       = dati_telemetria[10]  # Cd totale
+    valore_cl       = dati_telemetria[11]  # Cl attuale
 
-    # Calcolo Fuel - ATTENZIONE: Nel C la massa viene calcolata ma NON salvata in dati_debug!
-    # Dovrai aggiungere questa info nel file C se vuoi stamparla
-    fuel = 0  # Placeholder
-    
-    # Per ora calcoliamo la massa dal tempo di combustione
-    if tempo_trascorso < config.TEMPO_COMBUSTIONE:
-        massa_attuale = config.MASSA_TOTALE - (config.MASSA_PROPELLENTE / config.TEMPO_COMBUSTIONE) * tempo_trascorso
-    else:
-        massa_attuale = config.MASSA_TOTALE - config.MASSA_PROPELLENTE
-    fuel = massa_attuale - massa_secca
+    # Lettura fuel dal puntatore aggiornato
+    fuel = massa_fuel_attuale.value
 
     # SCRITTURA SU CSV
     # Colonne: Tempo | Distanza | Pos Missile (X,Y,Z) | Vel Totale | Pos Target (X,Y,Z) | 
-    #          G_Load | RHO | Temperatura | Mach | Q_dinamica | P_locale | Spinta | Cd | Cl | Fuel
+    #          G_Load | RHO | Temperatura | T_Ristagno | Mach | Q_dinamica | P_locale | Spinta | Spinta_base | Cd | Cl | Fuel
     writer.writerow([
         f"{tempo_trascorso:.3f}", f"{valore_distanza:.2f}",
         f"{posizione_missile[0]:.2f}", f"{posizione_missile[1]:.2f}", f"{posizione_missile[2]:.2f}", f"{vel_tot:.2f}",
         f"{posizione_bersaglio[0]:.2f}", f"{posizione_bersaglio[1]:.2f}", f"{posizione_bersaglio[2]:.2f}",
-        f"{valore_g_guida:.2f}", f"{valore_rho:.6f}", f"{valore_temp:.2f}", f"{valore_mach:.3f}", 
-        f"{valore_q_dyn:.0f}", f"{valore_p_loc:.0f}", f"{valore_spinta:.0f}", f"{valore_cd:.4f}", f"{valore_cl:.4f}", f"{fuel:.2f}"
+        f"{valore_g_guida:.2f}", f"{valore_rho:.6f}", f"{valore_temp:.2f}", f"{valore_temp_ristagno:.2f}", f"{valore_mach:.3f}", 
+        f"{valore_q_dyn:.0f}", f"{valore_p_loc:.0f}", f"{valore_spinta:.0f}", f"{valore_spinta_base:.0f}", f"{valore_cd:.4f}", f"{valore_cl:.4f}", f"{fuel:.2f}"
     ])
 
     # 3. Aggiorniamo il tempo
