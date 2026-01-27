@@ -17,12 +17,15 @@
 #define DENSITA_ARIA_LIV_MARE 1.225  // kg/m^3
 #define PRESSIONE_SEA_LEVEL 101325.0 // Pa
 #define SCALE_HEIGHT 8500.0          // m (decadimento esponenziale densità)
+#define FATTORE_CORRETTIVO_MACH 2.5
+#define K_WAVE 3.75
+#define B_MAX 2.4
 
 /* ===============================
    PARAMETRI MISSILE
    =============================== */
 
-#define AREA_MISSILE 0.0314          // m^2 (sezione frontale)
+#define AREA_MISSILE 0.0127          // m^2 (sezione frontale)
 #define AREA_UGELLO 0.0045           // m^2 (ugello motore)
 
 /* ===============================
@@ -30,7 +33,7 @@
    =============================== */
 
 #define LIMITE_STALLO 1.2            // Cl massimo (limite stallo alette)
-#define INDUCED_DRAG_K 0.05          // Fattore drag indotto
+#define INDUCED_DRAG_K 0.03          // Fattore drag indotto
 
 /* ===============================
    GUIDANCE & STRUTTURA
@@ -47,6 +50,6 @@
 #define MAX_TEMP_STRUTTURA 750.0     // K (limite termico struttura)
 #define MARGINE_SICUREZZA_TEMPERATURA 50.0 // Iniziamo a frenare 50 gradi prima
 
-#define OVERKLOCK 0 // ABILITA SICUREZZA STRUTTURALE E TERMICA
+#define OVERKLOCK 0 // 0 attiva sicurezza , 1 disattiva sicurezza
 
 #endif // COSTANTI_MISSILE_H

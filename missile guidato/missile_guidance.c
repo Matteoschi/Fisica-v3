@@ -2,11 +2,9 @@
 #include <math.h>
 #include "costanti_missile.h"
 
-double max_acc_strutturale = LIMIT_G_LOAD * G_ACCEL;
-
 // --- Funzioni Matematiche Ausiliarie ---
 
-double modulo_vettore(double vettore[3]) { // pitagora in 3D
+double modulo_vettore(double vettore[3]) { 
     return sqrt(vettore[0]*vettore[0] + vettore[1]*vettore[1] + vettore[2]*vettore[2]); 
 }
 
@@ -42,49 +40,46 @@ double calcola_fisica_step(
     double dati_debug[4]    
 ) {
     // 1. Calcolo Distanza e Vettori base
-    double differenza_vettoreiale[3], dist_sq = 0.0;
+    double Vettore_linea_vista[3], dist_sq = 0.0;
     for(int i=0; i<3; i++) {
-        differenza_vettoreiale[i] = posT[i] - posM[i];
-        dist_sq += differenza_vettoreiale[i]*differenza_vettoreiale[i];
+        Vettore_linea_vista[i] = posT[i] - posM[i];
+        dist_sq += Vettore_linea_vista[i]*Vettore_linea_vista[i];
     }
     double distanza = sqrt(dist_sq); // TROVATA LA DISTANZA TRA MISSILE E TARGET
     
     // Protezione divisione per zero
-    if (distanza < EPSILON) distanza = EPSILON;
-
-    // =============================================================================
-    // 3. Guida Proporzionale (Pro-Nav) Acmd=K*Vc*(ω_LOS x u_LOS)
-    // =============================================================================
-
-    double vettore_LOS_normalizzato[3]; // vettore direzione verso il target l=1
-    double velocità_relativa[3]; // velocità relativa
-    
-    for(int i=0; i<3; i++) {
-        vettore_LOS_normalizzato[i] = differenza_vettoreiale[i] / distanza; // normalizzazione r/|r|
+    if (distanza < EPSILON) {
+        distanza = EPSILON;
     }
 
+    double Versore_los[3]; // vettore direzione verso il target l=1
+    
+    for(int i=0; i<3; i++) {
+        Versore_los[i] = Vettore_linea_vista[i] / distanza; // normalizzazione r/|r|
+    }
+
+    double velocità_relativa[3]; // velocità relativa
     for(int i=0; i<3; i++) {
         velocità_relativa[i] = velT[i] - velM[i]; //differenza velocità
     }
+
+    // =============================================================================
+    // 4. Guida Proporzionale (Pro-Nav) Acmd=K*Vc*(ω_LOS x u_LOS)
+    // =============================================================================
     
-    double closing_speed = -prodotto_scalare(velocità_relativa, vettore_LOS_normalizzato); //prodotto scalare Vc=d/dt|r|
+    double velocità_chiusura = -prodotto_scalare(velocità_relativa, Versore_los); //prodotto scalare Vc=d/dt|r|
+    
     double accelerazione_comandata_legge_guida[3] = {0,0,0};
 
-    if (closing_speed > 0) { 
+    if (velocità_chiusura > 0) { 
         double cross_r_v[3], velocità_angolare_los[3], cross_omega_los[3];
-        prodotto_vettroiale(differenza_vettoreiale, velocità_relativa, cross_r_v); // calcolo r x V
+        prodotto_vettroiale(Vettore_linea_vista, velocità_relativa, cross_r_v); // calcolo r x V
         prodotto_vettore_scalare(cross_r_v, 1.0 / dist_sq, velocità_angolare_los); // calcolo velocità angolare LOS ω_LOS = (r x V) / |r|^2
-        prodotto_vettroiale(velocità_angolare_los, vettore_LOS_normalizzato, cross_omega_los);
-        
-        double gain = COSTANTE_NAVIGAZIONE * closing_speed;
-        prodotto_vettore_scalare(cross_omega_los, gain, accelerazione_comandata_legge_guida); // risultato finale Acmd
+        prodotto_vettroiale(velocità_angolare_los, Versore_los, cross_omega_los);
+        prodotto_vettore_scalare(cross_omega_los, COSTANTE_NAVIGAZIONE * velocità_chiusura, accelerazione_comandata_legge_guida); // risultato finale Acmd
     }
 
-    // Limite G-Force strutturale 
-    double guide_force = modulo_vettore(accelerazione_comandata_legge_guida);
-    if (guide_force > max_acc_strutturale && !OVERKLOCK) {
-        prodotto_vettore_scalare(accelerazione_comandata_legge_guida, max_acc_strutturale / guide_force, accelerazione_comandata_legge_guida); //Saturazione vettoriale = acc * (max_acc / acc)
-    }
+
 
     // 4. Forze Fisiche
     double modulo_velocità_missile = modulo_vettore(velM);
@@ -96,7 +91,7 @@ double calcola_fisica_step(
     } else {
         // Se fermo al lancio, punta verso il target
         for(int i=0; i<3; i++) { 
-            versore_velocità[i] = vettore_LOS_normalizzato[i];
+            versore_velocità[i] = Versore_los[i];
         }
     }
 
@@ -104,14 +99,15 @@ double calcola_fisica_step(
     // A. CALCOLO PARAMETRI ATMOSFERICI
     // ==========================================
     double altitudine = posM[2]; 
-    if (altitudine < 0) altitudine = 0; 
+    if (altitudine < 0) {
+        altitudine = 0; 
+    }
 
     // Formula Barometrica (approssimata): rho(h) = rho0 * e^(-h/H)
     double densita_aria = DENSITA_ARIA_LIV_MARE * exp(-altitudine / SCALE_HEIGHT);
 
     // Gradiente Termico Verticale: T(h) = T0 - L*h
     double temperatura_kelvin = 288.15 - 0.0065 * altitudine; 
-    if (temperatura_kelvin < 50.0) temperatura_kelvin = 50.0;
 
     // Velocità del suono (Gas ideale): a = sqrt(gamma * R * T)
     double velocità_suono = sqrt(GAMMA * R_GAS * temperatura_kelvin);
@@ -122,33 +118,26 @@ double calcola_fisica_step(
     // Pressione Dinamica (Bernoulli): q = 1/2 * rho * v^2 quantità energetica cinetica per unità di volume
     double pressione_dinamica = 0.5 * densita_aria * modulo_velocità_missile * modulo_velocità_missile;
 
-    // ==========================================
-    // G. PROTEZIONE TERMICA (Soft Limiter)
-    // ==========================================
-
-    // 1. Calcolo Temperatura di Ristagno
+    // Calcolo Temperatura di Ristagno
     double temperatura_ristagno = temperatura_kelvin * (1.0 + ((GAMMA - 1.0) / 2.0) * numero_di_mach * numero_di_mach);
 
-    // 2. Definizione della Zona di Sicurezza
+    //Controllo Proattivo della Temperatura (Soft Limiter)
     double soglia_inizio_intervento = MAX_TEMP_STRUTTURA - MARGINE_SICUREZZA_TEMPERATURA; 
     
     double fattore_spinta = 1.0; 
 
     if (temperatura_ristagno > soglia_inizio_intervento && !OVERKLOCK) { 
-        // Superamento soglia di sicurezza
         double delta_temp = temperatura_ristagno - soglia_inizio_intervento;
         fattore_spinta = 1.0 - (delta_temp / MARGINE_SICUREZZA_TEMPERATURA);
-        // Protezione matematica
-        if (fattore_spinta < 0.0) fattore_spinta = 0.0;
+        if (fattore_spinta < 0.0) {
+            fattore_spinta = 0.0;
+        }
     }
 
-    // 3. Calcolo Spinta Termica (Base)
-    // Applichiamo il taglio alla spinta nominale in ingresso
     double spinta_modulata = spinta_attuale * fattore_spinta;
 
-
     // ==========================================
-    // F. EFFICIENZA MOTORE (Compensazione Quota)
+    // 6. EFFICIENZA MOTORE (Compensazione Quota)
     // ==========================================
 
     // Calcolo Pressione Atmosferica Locale
@@ -157,36 +146,38 @@ double calcola_fisica_step(
     // Variabile che useremo per la fisica F=ma
     double spinta_motore_totale = 0.0; 
 
-    // Se il motore sta generando spinta (anche poca), calcoliamo il bonus di quota
+    // calcoliamo il bonus di quota
     if (spinta_modulata > EPSILON) {
-        
         double spinta_bonus = (PRESSIONE_SEA_LEVEL - pressione_locale) * AREA_UGELLO; 
         if (spinta_bonus < 0) spinta_bonus = 0; 
-        
-        // Spinta Totale = Spinta Tagliata dal calore + Bonus Vuoto
         spinta_motore_totale = spinta_modulata + spinta_bonus; 
     }
 
     // ==========================================
-    // C. COEFFICIENTE DRAG BASE (Cd0)
+    // 7. COEFFICIENTE DRAG BASE (Cd0)
     // ==========================================
     // Resistenza d'onda 
     double mach_multiplier = 1.0;
     if (numero_di_mach >= 0.8 && numero_di_mach < 1.2) {
-        // Approssimazione picco resistenza transonica (Prandtl-Glauert singularity) --2.5
-        mach_multiplier = 1.0 + (numero_di_mach - 0.8) * 3.75; 
+        mach_multiplier = 1.0 + (numero_di_mach - 0.8) * K_WAVE; 
     } 
-    double cd_aria = drag_coeff * mach_multiplier; // Questo è il Cd0
+    double coefficiente_drag_aria = drag_coeff * mach_multiplier; // Questo è il Cd0
 
     // ==========================================
-    // D. LIMITATORE G-FORCE (Aerodinamica vs Struttura)
+    // 8. Flight Envelope Protection
     // ==========================================
-    
+
+    // sccelerazione sterzande richiesta
+    double guide_force = modulo_vettore(accelerazione_comandata_legge_guida);
+
     // Equazione della Portanza (allo stallo): L_max = q * S * CL_max
     double max_forza_aero = pressione_dinamica * AREA_MISSILE * LIMITE_STALLO;
     
     // Seconda Legge di Newton: a_max = F_max / m
     double max_acc_aerodinamica = max_forza_aero / massa_attuale;
+
+    //Vincoli di Integrità Strutturale
+    double max_acc_strutturale = LIMIT_G_LOAD * G_ACCEL;
 
     // Il limite è il minimo tra la resistenza dei materiali e la portanza disponibile
     double limite_reale = max_acc_strutturale;
@@ -195,41 +186,38 @@ double calcola_fisica_step(
     }
     
     if (guide_force > limite_reale && !OVERKLOCK) {
-        if (limite_reale < EPSILON) { // Nessuna capacità di virata
+        if (limite_reale < EPSILON) { 
             accelerazione_comandata_legge_guida[0] = 0;
             accelerazione_comandata_legge_guida[1] = 0;
             accelerazione_comandata_legge_guida[2] = 0;
+            guide_force = 0.0;
         } else {
             double ratio = limite_reale / guide_force;
             prodotto_vettore_scalare(accelerazione_comandata_legge_guida, ratio, accelerazione_comandata_legge_guida); //Saturazione vettoriale = acc * (max_acc / acc)
+            guide_force = limite_reale;
         }
     }
 
     // ==========================================
-    // E. CALCOLO DRAG TOTALE (Polare Aerodinamica)
+    // 9. Bilancio Resistivo
     // ==========================================
     
-    double cl_attuale = 0.0;
+    double Coefficiente_Portanza_richiesto = 0.0;
     
-    if (pressione_dinamica > EPSILON) {
-
-        
-        // Newton: F_lift = m * acmd
-        double forza_lift_richiesta = massa_attuale * guide_force;
-        
-        // Equazione Portanza Inversa: CL = L / (q * S)
-        cl_attuale = forza_lift_richiesta / (pressione_dinamica * AREA_MISSILE);
+    if (pressione_dinamica > EPSILON) {        
+        double forza_Portanza_richiesta = massa_attuale * guide_force;// Newton: F_lift = m * acmd        
+        Coefficiente_Portanza_richiesto = forza_Portanza_richiesta / (pressione_dinamica * AREA_MISSILE);// Equazione Portanza Inversa: CL = L / (q * S)
     }
 
-    // Polare Aerodinamica (Parabolica): 
-    double cd_indotto = INDUCED_DRAG_K * (cl_attuale * cl_attuale); // dovuto ai vortici di estremità ala quando si gira
-    //Cd = Cd0 + k * CL^2
-    double cd_totale = cd_aria + cd_indotto;
+    //Cd = Cd0 + k * CL^2 dovuto ai vortici di estremità ala quando si gira
+    double resistenza_indotta = INDUCED_DRAG_K * (Coefficiente_Portanza_richiesto * Coefficiente_Portanza_richiesto); 
 
-    // Equazione della Resistenza (Drag): D = q * S * Cd , pressione_dinamica 0.5 * rho * v^2
-    double drag_force_mag = pressione_dinamica * AREA_MISSILE * cd_totale;
+    double coefficiente_attrito_tot = coefficiente_drag_aria + resistenza_indotta;
+
+    // Calcolo della Forza Resistiva Finale (Drag): D = q * S * Cd , pressione_dinamica 0.5 * rho * v^2
+    double drag_force_mag = pressione_dinamica * AREA_MISSILE * coefficiente_attrito_tot;
     
-    // B. Calcolo Accelerazione Totale 
+    //Calcolo Accelerazione Totale 
     for(int i=0; i<3; i++) {
         double f_thrust = versore_velocità[i] * spinta_motore_totale; // Forza di spinta = Spinta * versore_velocità
         double f_drag   = -versore_velocità[i] * drag_force_mag; // Forza di drag = -Versore_velocità * Drag_Mag (opppos)
@@ -254,8 +242,8 @@ double calcola_fisica_step(
         dati_debug[7]= pressione_locale;          // Pressione Atmosferica Attuale
         dati_debug[8]= spinta_motore_totale;          // Spinta Motore Attuale
         dati_debug[9]=spinta_attuale;          // Spinta Motore Base
-        dati_debug[10]= cd_totale;          // Coefficiente Drag Totale
-        dati_debug[11]= cl_attuale;         // Coefficiente Lift Attuale
+        dati_debug[10]= coefficiente_attrito_tot;          // Coefficiente Drag Totale
+        dati_debug[11]= Coefficiente_Portanza_richiesto;         // Coefficiente Lift Attuale
     }
     
     return fattore_spinta;
@@ -280,16 +268,6 @@ double aggiorna_missile(
     double drag_coeff,
     double dati_output[14]      // Array output esteso per debug
 ) {
-    // 1. Check rapido distanza iniziale (Prima di muovere)
-    double diff[3], d_sq = 0.0;
-    for(int i=0; i<3; i++) {
-        diff[i] = posT[i] - posM[i];
-        d_sq += diff[i]*diff[i];
-    }
-    double distanza = sqrt(d_sq);
-    
-    if (distanza < RAGGIO_PROSSIMITA) return 0.0; 
-    if (distanza < EPSILON) return distanza;
 
     // --- 2. GESTIONE MASSA E SPINTA (Dal serbatoio) ---
     double fuel_attuale = *ptr_massa_fuel; // Leggiamo valore attuale dal puntatore

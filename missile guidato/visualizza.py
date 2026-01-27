@@ -90,7 +90,7 @@ try:
         "Tempo", "Distanza", 
         "Missile_X", "Missile_Y", "Missile_Z", "Vel_Totale",
         "Target_X", "Target_Y", "Target_Z", 
-        "guide_force", "Densità_Aria_kg_m3", "Temperatura_Kelvin", "Temp_Ristagno_K", "Mach", "Pressione_Dinamica_Pa", "Pressione_Locale_Pa", "Spinta_Motore_N", "Spinta_Base_N", "Cd_Totale", "Cl_Attuale", "Fuel_kg"
+        "guide_force m/s^2", "Densità_Aria_kg_m3", "Temperatura_Kelvin", "Temp_Ristagno_K", "Mach", "Pressione_Dinamica_Pa", "Pressione_Locale_Pa", "Spinta_Motore_N", "Spinta_Base_N", "Cd_Totale", "Cl_Attuale", "Fuel_kg"
     ])
     print(f"[LOG] File CSV aperto: {percorso_file_csv}")
 except Exception as e:
