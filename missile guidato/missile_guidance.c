@@ -126,7 +126,7 @@ double calcola_fisica_step(
     
     double fattore_spinta = 1.0; 
 
-    if (temperatura_ristagno > soglia_inizio_intervento && !OVERKLOCK) { 
+    if (temperatura_ristagno > soglia_inizio_intervento && !OVERCLOCK) { 
         double delta_temp = temperatura_ristagno - soglia_inizio_intervento;
         fattore_spinta = 1.0 - (delta_temp / MARGINE_SICUREZZA_TEMPERATURA);
         if (fattore_spinta < 0.0) {
@@ -166,7 +166,7 @@ double calcola_fisica_step(
     // ==========================================
     // 8. Flight Envelope Protection
     // ==========================================
-
+    
     // sccelerazione sterzande richiesta
     double guide_force = modulo_vettore(accelerazione_comandata_legge_guida);
 
@@ -181,23 +181,55 @@ double calcola_fisica_step(
 
     // Il limite è il minimo tra la resistenza dei materiali e la portanza disponibile
     double limite_reale = max_acc_strutturale;
+    double stato_sicurezza = STATUS_OK;
+
+    // 1. Calcolo del limite reale
+    int limitato_da_aerodinamica = 0; // Flag interno
+
     if (max_acc_aerodinamica < max_acc_strutturale) {
         limite_reale = max_acc_aerodinamica;
+        limitato_da_aerodinamica = 1; // È colpa dell'aria
     }
-    
-    if (guide_force > limite_reale && !OVERKLOCK) {
-        if (limite_reale < EPSILON) { 
-            accelerazione_comandata_legge_guida[0] = 0;
-            accelerazione_comandata_legge_guida[1] = 0;
-            accelerazione_comandata_legge_guida[2] = 0;
-            guide_force = 0.0;
+
+    // 2. Gestione OVERCLOCK e SATURAZIONE
+    if (guide_force > limite_reale) {
+        if (!OVERCLOCK) {
+            // --- SICUREZZA ATTIVA: LIMITIAMO ---
+            if (limite_reale < EPSILON) { 
+                for(int i=0; i<3; i++) accelerazione_comandata_legge_guida[i] = 0.0;
+                guide_force = 0.0;
+                stato_sicurezza = STATUS_STALL_SPEED;
+            } else {
+                double ratio = limite_reale / guide_force;
+                prodotto_vettore_scalare(accelerazione_comandata_legge_guida, ratio, accelerazione_comandata_legge_guida); 
+                guide_force = limite_reale;
+                
+                if (limitato_da_aerodinamica) {
+                    stato_sicurezza = STATUS_LIMIT_AERO; 
+                } else {
+                    stato_sicurezza = STATUS_LIMIT_STRUCTURAL; 
+                }
+            }
         } else {
-            double ratio = limite_reale / guide_force;
-            prodotto_vettore_scalare(accelerazione_comandata_legge_guida, ratio, accelerazione_comandata_legge_guida); //Saturazione vettoriale = acc * (max_acc / acc)
-            guide_force = limite_reale;
+            if (limitato_da_aerodinamica) {
+                stato_sicurezza = STATUS_OVERCLOCK_AERO; 
+            } else {
+                stato_sicurezza = STATUS_OVERCLOCK_STRUCT;
+            }
         }
     }
 
+    double prodotto_boresight = prodotto_scalare(versore_velocità, Versore_los);
+    double limite_coseno = cos(ANG_GRADI_CONO_VISIONE * (PI / 180.0));
+
+    if (pressione_dinamica < 5000.0) {
+        for(int i=0; i<3; i++) accelerazione_comandata_legge_guida[i] = 0.0;
+        stato_sicurezza = STATUS_STALL_SPEED; 
+    } 
+    else if (prodotto_boresight < limite_coseno) {
+        for(int i=0; i<3; i++) accelerazione_comandata_legge_guida[i] = 0.0;
+        stato_sicurezza = STATUS_LOCK_LOST; 
+    }
     // ==========================================
     // 9. Bilancio Resistivo
     // ==========================================
@@ -207,6 +239,11 @@ double calcola_fisica_step(
     if (pressione_dinamica > EPSILON) {        
         double forza_Portanza_richiesta = massa_attuale * guide_force;// Newton: F_lift = m * acmd        
         Coefficiente_Portanza_richiesto = forza_Portanza_richiesta / (pressione_dinamica * AREA_MISSILE);// Equazione Portanza Inversa: CL = L / (q * S)
+        
+        // LIMITAZIONE: Cl non può superare il massimo fisico (stallo)
+        if (Coefficiente_Portanza_richiesto > LIMITE_STALLO) {
+            Coefficiente_Portanza_richiesto = LIMITE_STALLO;
+        }
     }
 
     //Cd = Cd0 + k * CL^2 dovuto ai vortici di estremità ala quando si gira
@@ -244,6 +281,7 @@ double calcola_fisica_step(
         dati_debug[9]=spinta_attuale;          // Spinta Motore Base
         dati_debug[10]= coefficiente_attrito_tot;          // Coefficiente Drag Totale
         dati_debug[11]= Coefficiente_Portanza_richiesto;         // Coefficiente Lift Attuale
+        dati_debug[12] = stato_sicurezza;          // Stato di Sicurezza
     }
     
     return fattore_spinta;

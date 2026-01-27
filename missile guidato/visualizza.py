@@ -5,6 +5,7 @@ import os
 import sys
 import csv   
 import math  
+import pandas as pd
 try:
     import config
     print(f"[PYTHON] File configurazione 'config.py' importato correttamente.")
@@ -90,7 +91,7 @@ try:
         "Tempo", "Distanza", 
         "Missile_X", "Missile_Y", "Missile_Z", "Vel_Totale",
         "Target_X", "Target_Y", "Target_Z", 
-        "guide_force m/s^2", "Densità_Aria_kg_m3", "Temperatura_Kelvin", "Temp_Ristagno_K", "Mach", "Pressione_Dinamica_Pa", "Pressione_Locale_Pa", "Spinta_Motore_N", "Spinta_Base_N", "Cd_Totale", "Cl_Attuale", "Fuel_kg"
+        "guide_force m/s^2", "Densità_Aria_kg_m3", "Temperatura_Kelvin", "Temp_Ristagno_K", "Mach", "Pressione_Dinamica_Pa", "Pressione_Locale_Pa", "Spinta_Motore_N", "Spinta_Base_N", "Cd_Totale", "Cl_Attuale", "Fuel_kg","stato sicurezza"
     ])
     print(f"[LOG] File CSV aperto: {percorso_file_csv}")
 except Exception as e:
@@ -167,20 +168,36 @@ for passo in range(numero_massimo_passi):
     valore_spinta_base = dati_telemetria[9]  # Spinta motore base (N)
     valore_cd       = dati_telemetria[10]  # Cd totale
     valore_cl       = dati_telemetria[11]  # Cl attuale
+    codice_stato = int(dati_telemetria[12])
 
+    testo_stato = "OK"
+    if codice_stato == 1.0:
+        testo_stato = "LIMIT_STRUCT (G)"    # Limitato dalla struttura
+    elif codice_stato == 1.5:
+        testo_stato = "LIMIT_AERO (CL)"     # Limitato dalle ali (non abbastanza portanza)
+    elif codice_stato == 2.0:
+        testo_stato = "LOST_LOCK"           # Perso visiva
+    elif codice_stato == 3.0:
+        testo_stato = "STALL_SPEED"         # Troppo lento
+    elif codice_stato == 4.0:
+        testo_stato = "DANGER_STRUCT"       # Overclock: Sta piegando il telaio!
+    elif codice_stato == 4.5:
+        testo_stato = "DANGER_SPIN"
     # Lettura fuel dal puntatore aggiornato
     fuel = massa_fuel_attuale.value
 
     # SCRITTURA SU CSV
     # Colonne: Tempo | Distanza | Pos Missile (X,Y,Z) | Vel Totale | Pos Target (X,Y,Z) | 
     #          G_Load | RHO | Temperatura | T_Ristagno | Mach | Q_dinamica | P_locale | Spinta | Spinta_base | Cd | Cl | Fuel
-    writer.writerow([
+    riga_dati=[
         f"{tempo_trascorso:.3f}", f"{valore_distanza:.2f}",
         f"{posizione_missile[0]:.2f}", f"{posizione_missile[1]:.2f}", f"{posizione_missile[2]:.2f}", f"{vel_tot:.2f}",
         f"{posizione_bersaglio[0]:.2f}", f"{posizione_bersaglio[1]:.2f}", f"{posizione_bersaglio[2]:.2f}",
         f"{valore_g_guida:.2f}", f"{valore_rho:.6f}", f"{valore_temp:.2f}", f"{valore_temp_ristagno:.2f}", f"{valore_mach:.3f}", 
-        f"{valore_q_dyn:.0f}", f"{valore_p_loc:.0f}", f"{valore_spinta:.0f}", f"{valore_spinta_base:.0f}", f"{valore_cd:.4f}", f"{valore_cl:.4f}", f"{fuel:.2f}"
-    ])
+        f"{valore_q_dyn:.0f}", f"{valore_p_loc:.0f}", f"{valore_spinta:.0f}", f"{valore_spinta_base:.0f}", f"{valore_cd:.4f}", f"{valore_cl:.4f}", f"{fuel:.2f}", testo_stato
+    ]
+    riga_excel_ita = [x.replace('.', ',') for x in riga_dati[:-1]] + [riga_dati[-1]]
+    writer.writerow(riga_excel_ita)
 
     # 3. Aggiorniamo il tempo
     tempo_trascorso += passo_temporale
