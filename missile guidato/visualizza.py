@@ -168,7 +168,7 @@ for passo in range(numero_massimo_passi):
     valore_spinta_base = dati_telemetria[9]  # Spinta motore base (N)
     valore_cd       = dati_telemetria[10]  # Cd totale
     valore_cl       = dati_telemetria[11]  # Cl attuale
-    codice_stato = int(dati_telemetria[12])
+    codice_stato = dati_telemetria[12]
 
     testo_stato = "OK"
     if codice_stato == 1.0:
@@ -199,10 +199,9 @@ for passo in range(numero_massimo_passi):
     riga_excel_ita = [x.replace('.', ',') for x in riga_dati[:-1]] + [riga_dati[-1]]
     writer.writerow(riga_excel_ita)
 
-    # 3. Aggiorniamo il tempo
+
     tempo_trascorso += passo_temporale
 
-    # 4. Controlli fine
     if distanza_attuale <= 0.0 or distanza_attuale < 8.0: 
         print(f"[SUCCESSO] TARGET COLPITO al passo {passo} (t={tempo_trascorso:.2f}s)!")
         bersaglio_colpito = True
