@@ -32,8 +32,8 @@
 #define ANG_GRADI_CONO_VISIONE 40    //Gradi
 
 /* TERMICO / SICUREZZA */
-#define MAX_TEMP_STRUTTURA 780.0     // K
-#define MARGINE_SICUREZZA_TEMPERATURA 60.0
+#define MAX_TEMP_STRUTTURA 750.0     // K
+#define MARGINE_SICUREZZA_TEMPERATURA 30.0          
 #define EPSILON 1e-6
 #define OVERCLOCK 0
 
@@ -41,13 +41,17 @@
 // Codici di stato del sistema di guida
 // Codici di stato estesi
 #define STATUS_OK                 0.0
-// Limitazioni (Il missile guida ma viene frenato)
+
 #define STATUS_LIMIT_STRUCTURAL   1.0  // Limitato dalla struttura (max G)
 #define STATUS_LIMIT_AERO         1.5  // Limitato dall'aerodinamica (max lift)
-// Fallimenti (Il missile smette di guidare)
-#define STATUS_LOCK_LOST          2.0  // Target fuori visuale
+#define STATUS_LIMIT_TEMPERATURE  1.8  // Limitato dalla temperatura strutturale
+#define STATUS_LIMIT_SPEED        1.9  
 #define STATUS_STALL_SPEED        3.0  // Velocità insufficiente
-// Overclock Warning
+#define STATUS_LOCK_LOST          2.0  // Target fuori visuale
+
+// in overclock
+#define STATUS_OVERCLOCK_TEMPERATURE   2.8  
+#define STATUS_OVERCLOCK_SPEED         2.9  
 #define STATUS_OVERCLOCK_STRUCT   4.0  // Overclock: Struttura sotto stress estremo
 #define STATUS_OVERCLOCK_AERO     4.5  // Overclock: Richiesta aerodinamica impossibile (Stallo profondo)
 

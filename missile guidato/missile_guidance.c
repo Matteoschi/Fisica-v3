@@ -39,6 +39,7 @@ double calcola_fisica_step(
     double acc_out[3],      
     double dati_debug[4]    
 ) {
+    double stato_sicurezza = STATUS_OK;
     // 1. Calcolo Distanza e Vettori base
     double Vettore_linea_vista[3], dist_sq = 0.0;
     for(int i=0; i<3; i++) {
@@ -126,11 +127,25 @@ double calcola_fisica_step(
     
     double fattore_spinta = 1.0; 
 
-    if (temperatura_ristagno > soglia_inizio_intervento && !OVERCLOCK) { 
-        double delta_temp = temperatura_ristagno - soglia_inizio_intervento;
-        fattore_spinta = 1.0 - (delta_temp / MARGINE_SICUREZZA_TEMPERATURA);
-        if (fattore_spinta < 0.0) {
-            fattore_spinta = 0.0;
+    if (!OVERCLOCK) {
+        if (temperatura_ristagno > soglia_inizio_intervento) {
+            double delta_temp = temperatura_ristagno - soglia_inizio_intervento;
+            fattore_spinta = 1.0 - (delta_temp / MARGINE_SICUREZZA_TEMPERATURA);
+            if (fattore_spinta < 0.0) fattore_spinta = 0.0;
+            if (temperatura_ristagno > MAX_TEMP_STRUTTURA) {
+                stato_sicurezza = STATUS_LIMIT_SPEED; 
+            } else {
+                stato_sicurezza = STATUS_LIMIT_TEMPERATURE;
+            }
+        }
+    }else {        
+        if (temperatura_ristagno > soglia_inizio_intervento) {
+
+             if (temperatura_ristagno > MAX_TEMP_STRUTTURA) {
+                 stato_sicurezza = STATUS_OVERCLOCK_TEMPERATURE; 
+             } else {
+                 stato_sicurezza = STATUS_OVERCLOCK_SPEED; 
+             }
         }
     }
 
@@ -181,14 +196,14 @@ double calcola_fisica_step(
 
     // Il limite è il minimo tra la resistenza dei materiali e la portanza disponibile
     double limite_reale = max_acc_strutturale;
-    double stato_sicurezza = STATUS_OK;
+    
 
     // 1. Calcolo del limite reale
-    int limitato_da_aerodinamica = 0; // Flag interno
+    int limitato_da_aerodinamica = 0; 
 
     if (max_acc_aerodinamica < max_acc_strutturale) {
         limite_reale = max_acc_aerodinamica;
-        limitato_da_aerodinamica = 1; // È colpa dell'aria
+        limitato_da_aerodinamica = 1; 
     }
 
     // 2. Gestione OVERCLOCK e SATURAZIONE

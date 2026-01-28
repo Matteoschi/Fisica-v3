@@ -175,8 +175,16 @@ for passo in range(numero_massimo_passi):
         testo_stato = "LIMIT_STRUCT (G)"    # Limitato dalla struttura
     elif codice_stato == 1.5:
         testo_stato = "LIMIT_AERO (CL)"     # Limitato dalle ali (non abbastanza portanza)
+    elif codice_stato == 1.8:
+        testo_stato = "LIMIT_TEMPERATURE"   # Limitato dalla temperatura
+    elif codice_stato == 1.9:
+        testo_stato = "LIMIT_SPEED"   
     elif codice_stato == 2.0:
         testo_stato = "LOST_LOCK"           # Perso visiva
+    elif codice_stato == 2.8:
+        testo_stato = "DANGER_TEMPERATURE"  # Lock perso per surriscaldamento
+    elif codice_stato == 2.9:
+        testo_stato = "DANGER_SPEED"        # Lock perso per velocità insufficiente
     elif codice_stato == 3.0:
         testo_stato = "STALL_SPEED"         # Troppo lento
     elif codice_stato == 4.0:
