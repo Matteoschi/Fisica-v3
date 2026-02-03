@@ -36,10 +36,11 @@ double calcola_fisica_step(
     double posT[3], double velT[3], 
     double spinta_attuale, 
     double drag_coeff,
-    double acc_out[3],      
-    double dati_debug[4]    
+    double acc_out[3],     
+    int Endgame_Strategy,   
+    double dati_debug[14]    
 ) {
-    double stato_sicurezza = STATUS_OK;
+    int stato_sicurezza = STATUS_OK;
     // 1. Calcolo Distanza e Vettori base
     double Vettore_linea_vista[3], dist_sq = 0.0;
     for(int i=0; i<3; i++) {
@@ -127,24 +128,23 @@ double calcola_fisica_step(
     
     double fattore_spinta = 1.0; 
 
-    if (!OVERCLOCK) {
+    if (!OVERCLOCK && !Endgame_Strategy) {
         if (temperatura_ristagno > soglia_inizio_intervento) {
             double delta_temp = temperatura_ristagno - soglia_inizio_intervento;
             fattore_spinta = 1.0 - (delta_temp / MARGINE_SICUREZZA_TEMPERATURA);
             if (fattore_spinta < 0.0) fattore_spinta = 0.0;
             if (temperatura_ristagno > MAX_TEMP_STRUTTURA) {
-                stato_sicurezza = STATUS_LIMIT_SPEED; 
+                stato_sicurezza |= STATUS_LIMIT_SPEED; 
             } else {
-                stato_sicurezza = STATUS_LIMIT_TEMPERATURE;
+                stato_sicurezza |= STATUS_LIMIT_TEMPERATURE;
             }
         }
     }else {        
         if (temperatura_ristagno > soglia_inizio_intervento) {
-
              if (temperatura_ristagno > MAX_TEMP_STRUTTURA) {
-                 stato_sicurezza = STATUS_OVERCLOCK_TEMPERATURE; 
+                    stato_sicurezza |= STATUS_OVERCLOCK_SPEED;
              } else {
-                 stato_sicurezza = STATUS_OVERCLOCK_SPEED; 
+                    stato_sicurezza |= STATUS_OVERCLOCK_TEMPERATURE;
              }
         }
     }
@@ -206,44 +206,47 @@ double calcola_fisica_step(
         limitato_da_aerodinamica = 1; 
     }
 
-    // 2. Gestione OVERCLOCK e SATURAZIONE
     if (guide_force > limite_reale) {
-        if (!OVERCLOCK) {
-            // --- SICUREZZA ATTIVA: LIMITIAMO ---
-            if (limite_reale < EPSILON) { 
-                for(int i=0; i<3; i++) accelerazione_comandata_legge_guida[i] = 0.0;
-                guide_force = 0.0;
-                stato_sicurezza = STATUS_STALL_SPEED;
-            } else {
-                double ratio = limite_reale / guide_force;
-                prodotto_vettore_scalare(accelerazione_comandata_legge_guida, ratio, accelerazione_comandata_legge_guida); 
-                guide_force = limite_reale;
-                
-                if (limitato_da_aerodinamica) {
-                    stato_sicurezza = STATUS_LIMIT_AERO; 
-                } else {
-                    stato_sicurezza = STATUS_LIMIT_STRUCTURAL; 
+            if (!OVERCLOCK && !Endgame_Strategy) {
+                if (limite_reale < EPSILON) { 
+                    for(int i=0; i<3; i++) accelerazione_comandata_legge_guida[i] = 0.0;
+                    guide_force = 0.0;
+                    stato_sicurezza |= STATUS_LIMIT_SPEED; 
+                } 
+                else {
+                    double ratio = limite_reale / guide_force;
+                    prodotto_vettore_scalare(accelerazione_comandata_legge_guida, ratio, accelerazione_comandata_legge_guida); 
+                    guide_force = limite_reale;
+                    if (limitato_da_aerodinamica) {
+                        stato_sicurezza |= STATUS_LIMIT_AERO; 
+                    } else {
+                        stato_sicurezza |= STATUS_LIMIT_STRUCTURAL; 
+                    }
+                }
+            } 
+            else {
+                if (guide_force > max_acc_aerodinamica) {
+                    double ratio = max_acc_aerodinamica / guide_force;
+                    prodotto_vettore_scalare(accelerazione_comandata_legge_guida, ratio, accelerazione_comandata_legge_guida);
+                    guide_force = max_acc_aerodinamica;
+                    stato_sicurezza |= STATUS_OVERCLOCK_AERO;
+                }
+                else {
+                    stato_sicurezza |= STATUS_OVERCLOCK_STRUCTURAL;
                 }
             }
-        } else {
-            if (limitato_da_aerodinamica) {
-                stato_sicurezza = STATUS_OVERCLOCK_AERO; 
-            } else {
-                stato_sicurezza = STATUS_OVERCLOCK_STRUCT;
-            }
         }
-    }
 
     double prodotto_boresight = prodotto_scalare(versore_velocità, Versore_los);
     double limite_coseno = cos(ANG_GRADI_CONO_VISIONE * (PI / 180.0));
 
     if (pressione_dinamica < 5000.0) {
         for(int i=0; i<3; i++) accelerazione_comandata_legge_guida[i] = 0.0;
-        stato_sicurezza = STATUS_STALL_SPEED; 
+        stato_sicurezza |= STATUS_LIMIT_SPEED; 
     } 
     else if (prodotto_boresight < limite_coseno) {
         for(int i=0; i<3; i++) accelerazione_comandata_legge_guida[i] = 0.0;
-        stato_sicurezza = STATUS_LOCK_LOST; 
+        stato_sicurezza |= STATUS_LOCK_LOST; 
     }
     // ==========================================
     // 9. Bilancio Resistivo
@@ -321,6 +324,20 @@ double aggiorna_missile(
     double drag_coeff,
     double dati_output[14]      // Array output esteso per debug
 ) {
+    double diff_temp[3], dist_sq_temp = 0.0;
+    for(int i=0; i<3; i++) {
+        diff_temp[i] = posT[i] - posM[i];
+        dist_sq_temp += diff_temp[i]*diff_temp[i];
+    }
+    double distanza_stimata_inizio = sqrt(dist_sq_temp);
+
+    // Decisione Strategica
+    int modalita_terminale = 0;
+    if (distanza_stimata_inizio < SOGLIA_ENDGAME) { // <--- SOGLIA ENDGAME
+        modalita_terminale = 1;
+    }else {
+        modalita_terminale = 0;
+    }
 
     // --- 2. GESTIONE MASSA E SPINTA (Dal serbatoio) ---
     double fuel_attuale = *ptr_massa_fuel; // Leggiamo valore attuale dal puntatore
@@ -342,13 +359,14 @@ double aggiorna_missile(
     double k1_acc[3], k2_acc[3], k3_acc[3], k4_acc[3];
     double k1_vel[3], k2_vel[3], k3_vel[3], k4_vel[3];
     double pos_temp[3], vel_temp[3];
+    double massa_temp;
     
     // --- STEP K1 (Stato Iniziale) ---
     for(int i=0; i<3; i++) k1_vel[i] = velM[i];
     
     // NOTA IMPORTANTE: Qui catturiamo il 'throttle_factor' (0.0 - 1.0) 
     // restituito da calcola_fisica_step (che contiene la logica termica)
-    double throttle_usato = calcola_fisica_step(posM, velM, massa_totale_fisica, posT, velT, spinta_disponibile, drag_coeff, k1_acc, dati_output);
+    double throttle_usato = calcola_fisica_step(posM, velM, massa_totale_fisica, posT, velT, spinta_disponibile, drag_coeff, k1_acc, modalita_terminale,dati_output);
 
     // --- STEP K2 (Metà strada) ---
     for(int i=0; i<3; i++) {
@@ -356,8 +374,9 @@ double aggiorna_missile(
         vel_temp[i] = velM[i] + k1_acc[i] * 0.5 * dt; 
     }
     for(int i=0; i<3; i++) k2_vel[i] = vel_temp[i];
+    massa_temp = massa_totale_fisica - (consumo_kg_s * throttle_usato * 0.5 * dt);
     
-    calcola_fisica_step(pos_temp, vel_temp, massa_totale_fisica, posT, velT, spinta_disponibile, drag_coeff, k2_acc, NULL);
+    calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k2_acc,modalita_terminale, NULL);
 
     // --- STEP K3 (Metà strada) ---
     for(int i=0; i<3; i++) {
@@ -365,8 +384,9 @@ double aggiorna_missile(
         vel_temp[i] = velM[i] + k2_acc[i] * 0.5 * dt; 
     }
     for(int i=0; i<3; i++) k3_vel[i] = vel_temp[i];
+    massa_temp = massa_totale_fisica - (consumo_kg_s * throttle_usato * 0.5 * dt);
     
-    calcola_fisica_step(pos_temp, vel_temp, massa_totale_fisica, posT, velT, spinta_disponibile, drag_coeff, k3_acc, NULL);
+    calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k3_acc, modalita_terminale,NULL);
 
     // --- STEP K4 (Fine strada) ---
     for(int i=0; i<3; i++) {
@@ -374,8 +394,9 @@ double aggiorna_missile(
         vel_temp[i] = velM[i] + k3_acc[i] * dt;
     }
     for(int i=0; i<3; i++) k4_vel[i] = vel_temp[i];
+    massa_temp = massa_totale_fisica - (consumo_kg_s * throttle_usato * dt);
 
-    calcola_fisica_step(pos_temp, vel_temp, massa_totale_fisica, posT, velT, spinta_disponibile, drag_coeff, k4_acc, NULL);
+    calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k4_acc, modalita_terminale, NULL);
 
     // --- SOMMA FINALE RK4 (Aggiornamento Cinematico) ---
     for(int i=0; i<3; i++) 
@@ -406,7 +427,6 @@ double aggiorna_missile(
     for(int i=0; i<3; i++) {
         diff_fin[i] = posT[i] - posM[i];
         d_sq_fin += diff_fin[i]*diff_fin[i];
-    }
-    
+    }    
     return sqrt(d_sq_fin);
 }

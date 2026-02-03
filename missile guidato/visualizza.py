@@ -139,23 +139,7 @@ for passo in range(numero_massimo_passi):
         ctypes.c_double(config.DRAG_COEFF),
         dati_telemetria
     )
-    
-    # Lettura dati telemetria da C:
-    # [0] = distanza (m) - Distanza Target-Missile
-    # [1] = guide_force (m/s²) - Accelerazione di guida Pro-Nav
-    # [2] = densita_aria (kg/m³) - Densità atmosferica corrente
-    # [3] = temperatura_kelvin (K) - Temperatura atmosferica
-    # [4] = temperatura_ristagno (K) - Temperatura di ristagno (stagnation)
-    # [5] = numero_di_mach - Numero di Mach attuale
-    # [6] = pressione_dinamica (Pa) - Pressione dinamica (bernoulli)
-    # [7] = pressione_locale (Pa) - Pressione atmosferica locale
-    # [8] = spinta_motore_totale (N) - Spinta motore con bonus altitudine
-    # [9] = spinta_attuale (N) - Spinta motore nominale
-    # [10] = cd_totale - Coefficiente drag totale (parassite + indotto)
-    # [11] = cl_attuale - Coefficiente portanza attuale
-    # [12] = (riservato)
-    # [13] = (riservato)
-    
+        
     valore_distanza = dati_telemetria[0]   # Distanza Target-Missile (m)
     valore_g_guida  = dati_telemetria[1]   # G-Force dalla guida Pro-Nav (m/s²)
     valore_rho      = dati_telemetria[2]   # Densità aria (kg/m³)
@@ -168,30 +152,40 @@ for passo in range(numero_massimo_passi):
     valore_spinta_base = dati_telemetria[9]  # Spinta motore base (N)
     valore_cd       = dati_telemetria[10]  # Cd totale
     valore_cl       = dati_telemetria[11]  # Cl attuale
-    codice_stato = dati_telemetria[12]
+    codice_stato_int = int(dati_telemetria[12])
 
-    testo_stato = "OK"
-    if codice_stato == 1.0:
-        testo_stato = "LIMIT_STRUCT (G)"    # Limitato dalla struttura
-    elif codice_stato == 1.5:
-        testo_stato = "LIMIT_AERO (CL)"     # Limitato dalle ali (non abbastanza portanza)
-    elif codice_stato == 1.8:
-        testo_stato = "LIMIT_TEMPERATURE"   # Limitato dalla temperatura
-    elif codice_stato == 1.9:
-        testo_stato = "LIMIT_SPEED"   
-    elif codice_stato == 2.0:
-        testo_stato = "LOST_LOCK"           # Perso visiva
-    elif codice_stato == 2.8:
-        testo_stato = "DANGER_TEMPERATURE"  # Lock perso per surriscaldamento
-    elif codice_stato == 2.9:
-        testo_stato = "DANGER_SPEED"        # Lock perso per velocità insufficiente
-    elif codice_stato == 3.0:
-        testo_stato = "STALL_SPEED"         # Troppo lento
-    elif codice_stato == 4.0:
-        testo_stato = "DANGER_STRUCT"       # Overclock: Sta piegando il telaio!
-    elif codice_stato == 4.5:
-        testo_stato = "DANGER_SPIN"
-    # Lettura fuel dal puntatore aggiornato
+    lista_stati = []
+
+    FLAG_LIMIT_STRUCT      = 1
+    FLAG_LIMIT_AERO        = 2
+    FLAG_LIMIT_TEMPERATURE = 4
+    FLAG_LIMIT_SPEED       = 8
+    FLAG_LOCK_LOST         = 16
+    FLAG_STALL_SPEED       = 32
+    FLAG_OVERCLOCK_TEMP    = 64
+    FLAG_OVERCLOCK_SPEED   = 128
+    FLAG_OVERCLOCK_STRUCT  = 256
+    FLAG_OVERCLOCK_AERO    = 512
+
+    if codice_stato_int == 0:
+        lista_stati.append("OK")
+    else:
+        # Controlliamo bit per bit
+        if codice_stato_int & FLAG_LIMIT_STRUCT:      lista_stati.append("LIMIT_STRUCTURAL")
+        if codice_stato_int & FLAG_LIMIT_AERO:        lista_stati.append("LIMIT_AERO")
+        if codice_stato_int & FLAG_LIMIT_TEMPERATURE: lista_stati.append("LIMIT_TEMPERATURE")
+        if codice_stato_int & FLAG_LIMIT_SPEED:       lista_stati.append("LIMIT_SPEED")
+        
+        if codice_stato_int & FLAG_LOCK_LOST:         lista_stati.append("LOCK_LOST")
+        if codice_stato_int & FLAG_STALL_SPEED:       lista_stati.append("STALL")
+        
+        if codice_stato_int & FLAG_OVERCLOCK_TEMP:    lista_stati.append("DANGER_OVERCLOCK_TEMPERATURE")
+        if codice_stato_int & FLAG_OVERCLOCK_SPEED:   lista_stati.append("DANGER_OVERCLOCK_SPEED")
+        if codice_stato_int & FLAG_OVERCLOCK_STRUCT:  lista_stati.append("DANGER_OVERCLOCK_STRUCTURAL")
+        if codice_stato_int & FLAG_OVERCLOCK_AERO:    lista_stati.append("DANGER_OVERCLOCK_AERO")
+
+    # Unisce tutti gli stati attivi con un separatore (es. " | ")
+    testo_stato = " | ".join(lista_stati)
     fuel = massa_fuel_attuale.value
 
     # SCRITTURA SU CSV

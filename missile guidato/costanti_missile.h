@@ -30,6 +30,7 @@
 #define LIMIT_G_LOAD 35.0            // g (limite operativo realistico)
 #define RAGGIO_PROSSIMITA 9.0        // m
 #define ANG_GRADI_CONO_VISIONE 40    //Gradi
+#define SOGLIA_ENDGAME 1000.0        // m (distanza per entrare in modalità terminale)
 
 /* TERMICO / SICUREZZA */
 #define MAX_TEMP_STRUTTURA 750.0     // K
@@ -40,19 +41,23 @@
 
 // Codici di stato del sistema di guida
 // Codici di stato estesi
-#define STATUS_OK                 0.0
+#define STATUS_OK                 0
 
-#define STATUS_LIMIT_STRUCTURAL   1.0  // Limitato dalla struttura (max G)
-#define STATUS_LIMIT_AERO         1.5  // Limitato dall'aerodinamica (max lift)
-#define STATUS_LIMIT_TEMPERATURE  1.8  // Limitato dalla temperatura strutturale
-#define STATUS_LIMIT_SPEED        1.9  
-#define STATUS_STALL_SPEED        3.0  // Velocità insufficiente
-#define STATUS_LOCK_LOST          2.0  // Target fuori visuale
+// Limitatori Standard (Sicurezza attiva)
+#define STATUS_LIMIT_STRUCTURAL         (1 << 0)  // 1
+#define STATUS_LIMIT_AERO           (1 << 1)  // 2
+#define STATUS_LIMIT_TEMPERATURE    (1 << 2)  // 4
+#define STATUS_LIMIT_SPEED          (1 << 3)  // 8
 
-// in overclock
-#define STATUS_OVERCLOCK_TEMPERATURE   2.8  
-#define STATUS_OVERCLOCK_SPEED         2.9  
-#define STATUS_OVERCLOCK_STRUCT   4.0  // Overclock: Struttura sotto stress estremo
-#define STATUS_OVERCLOCK_AERO     4.5  // Overclock: Richiesta aerodinamica impossibile (Stallo profondo)
+// Errori Critici
+#define STATUS_LOCK_LOST            (1 << 4)  // 16
+#define STATUS_STALL_SPEED          (1 << 5)  // 32
+
+// Overclocking 
+#define STATUS_OVERCLOCK_TEMPERATURE       (1 << 6)  // 64
+#define STATUS_OVERCLOCK_SPEED      (1 << 7)  // 128
+#define STATUS_OVERCLOCK_STRUCTURAL     (1 << 8)  // 256
+#define STATUS_OVERCLOCK_AERO       (1 << 9)  // 512
+
 
 #endif // COSTANTI_MISSILE_H
