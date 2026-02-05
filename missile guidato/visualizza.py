@@ -47,9 +47,10 @@ libreria_motore_fisico.aggiorna_missile.argtypes = [
     ctypes.c_double,        # 12. Consumo kg/s
     ctypes.c_double,        # 13. Spinta Nominale
     ctypes.c_double,        # 14. Coeff Drag
+    ctypes.POINTER(ctypes.c_double), # 15. Puntatore Temp Skin
     puntatore_array_double  # 15. Array Output
 ]
-dati_telemetria = (ctypes.c_double * 14)(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # Array di 14 elementi per tutta la telemetria
+dati_telemetria = (ctypes.c_double * 15)(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # Array di 15 elementi per tutta la telemetria
 libreria_motore_fisico.aggiorna_missile.restype = ctypes.c_double 
 
 # ==============================================================================
@@ -69,6 +70,7 @@ numero_massimo_passi = config.MAX_STEPS
 # Parametri aggiuntivi per il motore
 massa_a_vuoto = config.MASSA_TOTALE - config.MASSA_PROPELLENTE  # Massa secca
 massa_fuel_attuale = ctypes.c_double(config.MASSA_PROPELLENTE)   # Fuel rimasto (puntatore)
+temp_skin_attuale = ctypes.c_double(288.15)  # Temperatura pelle missile (K) - parte da T_mare
 consumo_kg_s = config.MASSA_PROPELLENTE / config.TEMPO_COMBUSTIONE  # Rateo di consumo
 
 # ==============================================================================
@@ -91,7 +93,7 @@ try:
         "Tempo", "Distanza", 
         "Missile_X", "Missile_Y", "Missile_Z", "Vel_Totale",
         "Target_X", "Target_Y", "Target_Z", 
-        "guide_force m/s^2", "Densità_Aria_kg_m3", "Temperatura_Kelvin", "Temp_Ristagno_K", "Mach", "Pressione_Dinamica_Pa", "Pressione_Locale_Pa", "Spinta_Motore_N", "Spinta_Base_N", "Cd_Totale", "Cl_Attuale", "Fuel_kg","stato sicurezza"
+        "guide_force m/s^2", "Densità_Aria_kg_m3", "Temperatura_Kelvin", "Temp_Ristagno_K", "Temp_Skin_K","Mach", "Pressione_Dinamica_Pa", "Pressione_Locale_Pa", "Spinta_Motore_N", "Spinta_Base_N", "Cd_Totale", "Cl_Attuale",  "Fuel_kg","stato sicurezza"
     ])
     print(f"[LOG] File CSV aperto: {percorso_file_csv}")
 except Exception as e:
@@ -137,6 +139,7 @@ for passo in range(numero_massimo_passi):
         ctypes.c_double(consumo_kg_s),
         ctypes.c_double(config.SPINTA_MOTORE),
         ctypes.c_double(config.DRAG_COEFF),
+        ctypes.byref(temp_skin_attuale),
         dati_telemetria
     )
         
@@ -152,6 +155,7 @@ for passo in range(numero_massimo_passi):
     valore_spinta_base = dati_telemetria[9]  # Spinta motore base (N)
     valore_cd       = dati_telemetria[10]  # Cd totale
     valore_cl       = dati_telemetria[11]  # Cl attuale
+    valore_temp_skin = dati_telemetria[13]  # Temperatura Pelle Missile
     codice_stato_int = int(dati_telemetria[12])
 
     lista_stati = []
@@ -195,7 +199,7 @@ for passo in range(numero_massimo_passi):
         f"{tempo_trascorso:.3f}", f"{valore_distanza:.2f}",
         f"{posizione_missile[0]:.2f}", f"{posizione_missile[1]:.2f}", f"{posizione_missile[2]:.2f}", f"{vel_tot:.2f}",
         f"{posizione_bersaglio[0]:.2f}", f"{posizione_bersaglio[1]:.2f}", f"{posizione_bersaglio[2]:.2f}",
-        f"{valore_g_guida:.2f}", f"{valore_rho:.6f}", f"{valore_temp:.2f}", f"{valore_temp_ristagno:.2f}", f"{valore_mach:.3f}", 
+        f"{valore_g_guida:.2f}", f"{valore_rho:.6f}", f"{valore_temp:.2f}", f"{valore_temp_ristagno:.2f}", f"{valore_temp_skin:.2f}", f"{valore_mach:.3f}", 
         f"{valore_q_dyn:.0f}", f"{valore_p_loc:.0f}", f"{valore_spinta:.0f}", f"{valore_spinta_base:.0f}", f"{valore_cd:.4f}", f"{valore_cl:.4f}", f"{fuel:.2f}", testo_stato
     ]
     riga_excel_ita = [x.replace('.', ',') for x in riga_dati[:-1]] + [riga_dati[-1]]
@@ -204,7 +208,7 @@ for passo in range(numero_massimo_passi):
 
     tempo_trascorso += passo_temporale
 
-    if distanza_attuale <= 0.0 or distanza_attuale < 8.0: 
+    if distanza_attuale <= 0.0 or distanza_attuale < config.Distanza_Impatto: 
         print(f"[SUCCESSO] TARGET COLPITO al passo {passo} (t={tempo_trascorso:.2f}s)!")
         bersaglio_colpito = True
         break

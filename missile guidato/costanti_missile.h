@@ -39,10 +39,12 @@
 #define SOGLIA_ENDGAME 1000.0        // m (distanza per entrare in modalità terminale)
 
 /* TERMICO / SICUREZZA */
-#define MAX_TEMP_STRUTTURA 750.0     // K
-#define MARGINE_SICUREZZA_TEMPERATURA 20.0          
+#define MAX_TEMP_STRUTTURA 600.0     // K
+#define MARGINE_SICUREZZA_TEMPERATURA 25.0          
 #define EPSILON 1e-6
 #define OVERCLOCK 0
+#define RECOVERY_FACTOR 0.89
+#define COEFF_SCAMBIO_TERMICO 0.0004
 
 
 // Codici di stato del sistema di guida

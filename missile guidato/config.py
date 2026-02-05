@@ -1,5 +1,6 @@
 DT = 0.01              # 10ms (sufficiente per la simulazione, 0.005 era eccessivo)
 MAX_STEPS = 6000       # 60 secondi (durata massima della batteria termica del seeker)
+Distanza_Impatto = 1.0   # Distanza minima per considerare l'impatto (metri)
 
 # ==========================================
 #  PARAMETRI FISICI (AIM-9M Sidewinder Data)

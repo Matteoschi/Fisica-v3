@@ -38,6 +38,8 @@ double calcola_fisica_step(
     double drag_coeff,
     double acc_out[3],     
     int Endgame_Strategy,   
+    double temp_skin_attuale,  // (Input) Temperatura della struttura in questo istante
+    double *out_rate_temp,     // (Output) quanto velocemente cambia la temp
     double dati_debug[14]    
 ) {
     int stato_sicurezza = STATUS_OK;
@@ -143,25 +145,42 @@ double calcola_fisica_step(
     // Calcolo Temperatura di Ristagno
     double temperatura_ristagno = temperatura_kelvin * (1.0 + ((GAMMA - 1.0) / 2.0) * numero_di_mach * numero_di_mach);
 
+    //temperatura dell'aria compressa che avvolge il missile.
+    double temp_recupero = temperatura_kelvin * (1.0 + RECOVERY_FACTOR * ((GAMMA - 1.0) / 2.0) * numero_di_mach * numero_di_mach);
+
+    // calcoo quanto calore entra (Coefficiente K)
+    double K_factor = 0.0;
+    if (modulo_velocità_missile > 1.0) {
+        // La formula fisica: K = C * rho * V^0.8
+        K_factor = COEFF_SCAMBIO_TERMICO * densita_aria * pow(modulo_velocità_missile, 0.8);
+    }
+
+    // Variazione = K * (Temperatura_Fuori - Temperatura_Metallo)
+    double rate_riscaldamento = K_factor * (temp_recupero - temp_skin_attuale);
+
+    if (out_rate_temp != NULL) {
+        *out_rate_temp = rate_riscaldamento;
+    }
+
     //Controllo Proattivo della Temperatura (Soft Limiter)
     double soglia_inizio_intervento = MAX_TEMP_STRUTTURA - MARGINE_SICUREZZA_TEMPERATURA; 
     
     double fattore_spinta = 1.0; 
 
     if (!OVERCLOCK && !Endgame_Strategy) {
-        if (temperatura_ristagno > soglia_inizio_intervento) {
-            double delta_temp = temperatura_ristagno - soglia_inizio_intervento;
+        if (temp_skin_attuale > soglia_inizio_intervento) {
+            double delta_temp = temp_skin_attuale - soglia_inizio_intervento;
             fattore_spinta = 1.0 - (delta_temp / MARGINE_SICUREZZA_TEMPERATURA);
             if (fattore_spinta < 0.0) fattore_spinta = 0.0;
-            if (temperatura_ristagno > MAX_TEMP_STRUTTURA) {
+            if (temp_skin_attuale > MAX_TEMP_STRUTTURA) {
                 stato_sicurezza |= STATUS_LIMIT_SPEED; 
             } else {
                 stato_sicurezza |= STATUS_LIMIT_TEMPERATURE;
             }
         }
     }else {        
-        if (temperatura_ristagno > soglia_inizio_intervento) {
-             if (temperatura_ristagno > MAX_TEMP_STRUTTURA) {
+        if (temp_skin_attuale > soglia_inizio_intervento) {
+             if (temp_skin_attuale > MAX_TEMP_STRUTTURA) {
                     stato_sicurezza |= STATUS_OVERCLOCK_SPEED;
              } else {
                     stato_sicurezza |= STATUS_OVERCLOCK_TEMPERATURE;
@@ -262,7 +281,7 @@ double calcola_fisica_step(
 
     if (pressione_dinamica < 5000.0) {
         for(int i=0; i<3; i++) accelerazione_comandata_legge_guida[i] = 0.0;
-        stato_sicurezza |= STATUS_LIMIT_SPEED; 
+        stato_sicurezza |= STATUS_STALL_SPEED; 
     } 
     else if (prodotto_boresight < limite_coseno) {
         for(int i=0; i<3; i++) accelerazione_comandata_legge_guida[i] = 0.0;
@@ -320,6 +339,7 @@ double calcola_fisica_step(
         dati_debug[10]= coefficiente_attrito_tot;          // Coefficiente Drag Totale
         dati_debug[11]= Coefficiente_Portanza_richiesto;         // Coefficiente Lift Attuale
         dati_debug[12] = stato_sicurezza;          // Stato di Sicurezza
+        dati_debug[13] = temp_skin_attuale;        // ✅ Temperatura Pelle Missile
     }
     
     return fattore_spinta;
@@ -342,6 +362,7 @@ double aggiorna_missile(
     double consumo_kg_s,        // Rateo di consumo a piena potenza (kg/s)
     double spinta_nominale,     // Spinta massima in Newton
     double drag_coeff,
+    double *ptr_temp_skin,      // (Input/Output) Temperatura della struttura in questo istante
     double dati_output[14]      // Array output esteso per debug
 ) {
     double diff_temp[3], dist_sq_temp = 0.0;
@@ -380,13 +401,18 @@ double aggiorna_missile(
     double k1_vel[3], k2_vel[3], k3_vel[3], k4_vel[3];
     double pos_temp[3], vel_temp[3];
     double massa_temp;
+    if (*ptr_temp_skin < 1.0) {
+            *ptr_temp_skin = TEMPERATURA_LIV_MARE; 
+        }
+    double T_skin_locale = *ptr_temp_skin;
+    double rate_temp_k1, rate_temp_k2, rate_temp_k3, rate_temp_k4;
     
     // --- STEP K1 (Stato Iniziale) ---
     for(int i=0; i<3; i++) k1_vel[i] = velM[i];
     
     // NOTA IMPORTANTE: Qui catturiamo il 'throttle_factor' (0.0 - 1.0) 
     // restituito da calcola_fisica_step (che contiene la logica termica)
-    double throttle_usato = calcola_fisica_step(posM, velM, massa_totale_fisica, posT, velT, spinta_disponibile, drag_coeff, k1_acc, modalita_terminale,dati_output);
+    double throttle_usato = calcola_fisica_step(posM, velM, massa_totale_fisica, posT, velT, spinta_disponibile, drag_coeff, k1_acc, modalita_terminale, T_skin_locale, &rate_temp_k1, dati_output);
 
     // --- STEP K2 (Metà strada) ---
     for(int i=0; i<3; i++) {
@@ -395,8 +421,9 @@ double aggiorna_missile(
     }
     for(int i=0; i<3; i++) k2_vel[i] = vel_temp[i];
     massa_temp = massa_totale_fisica - (consumo_kg_s * throttle_usato * 0.5 * dt);
+    double T_skin_temp = T_skin_locale + rate_temp_k1 * 0.5 * dt;
     
-    calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k2_acc,modalita_terminale, NULL);
+    calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k2_acc, modalita_terminale, T_skin_temp, &rate_temp_k2, NULL);
 
     // --- STEP K3 (Metà strada) ---
     for(int i=0; i<3; i++) {
@@ -405,8 +432,9 @@ double aggiorna_missile(
     }
     for(int i=0; i<3; i++) k3_vel[i] = vel_temp[i];
     massa_temp = massa_totale_fisica - (consumo_kg_s * throttle_usato * 0.5 * dt);
+    T_skin_temp = T_skin_locale + rate_temp_k2 * 0.5 * dt;
     
-    calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k3_acc, modalita_terminale,NULL);
+    calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k3_acc, modalita_terminale, T_skin_temp, &rate_temp_k3, NULL);
 
     // --- STEP K4 (Fine strada) ---
     for(int i=0; i<3; i++) {
@@ -415,11 +443,9 @@ double aggiorna_missile(
     }
     for(int i=0; i<3; i++) k4_vel[i] = vel_temp[i];
     massa_temp = massa_totale_fisica - (consumo_kg_s * throttle_usato * dt);
+    T_skin_temp = T_skin_locale + rate_temp_k3 * dt;
 
-    calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k4_acc, modalita_terminale, NULL);
-
-
-
+    calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k4_acc, modalita_terminale, T_skin_temp, &rate_temp_k4, NULL);
 
 
 // --- GESTIONE MANOVRA TARGET (Zoom Climb 62k ft/min) ---
@@ -465,6 +491,8 @@ double aggiorna_missile(
     }
 
     // --- SOMMA FINALE RK4 (Aggiornamento Cinematico) ---
+    double T_skin_finale = T_skin_locale + (dt / 6.0) * (rate_temp_k1 + 2.0*rate_temp_k2 + 2.0*rate_temp_k3 + rate_temp_k4);
+    *ptr_temp_skin = T_skin_finale; // Scriviamo la temperatura aggiornata
     for(int i=0; i<3; i++) 
     {
         // Aggiorna posizione Missile (RK4)
@@ -477,10 +505,6 @@ double aggiorna_missile(
         // Usa la velocità velT aggiornata dalla logica di manovra qui sopra
         posT[i] += velT[i] * dt;
     }
-
-
-
-
 
     // --- 3. AGGIORNAMENTO CARBURANTE ---
     // Se c'è carburante, lo consumiamo in base a quanto abbiamo spinto (throttle_usato)
