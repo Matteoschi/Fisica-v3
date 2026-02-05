@@ -81,8 +81,6 @@ double calcola_fisica_step(
         prodotto_vettore_scalare(cross_omega_los, COSTANTE_NAVIGAZIONE * velocità_chiusura, accelerazione_comandata_legge_guida); // risultato finale Acmd
     }
 
-
-
     // 4. Forze Fisiche
     double modulo_velocità_missile = modulo_vettore(velM);
     double versore_velocità[3] = {1,0,0};
@@ -105,11 +103,33 @@ double calcola_fisica_step(
         altitudine = 0; 
     }
 
-    // Formula Barometrica (approssimata): rho(h) = rho0 * e^(-h/H)
-    double densita_aria = DENSITA_ARIA_LIV_MARE * exp(-altitudine / SCALE_HEIGHT);
+    // Atmosfera Standard USSA-1976 (Modello a due strati)
+    double pressione_attuale;
+    double temperatura_kelvin;
+    double densita_aria;
 
-    // Gradiente Termico Verticale: T(h) = T0 - L*h
-    double temperatura_kelvin = 288.15 - 0.0065 * altitudine; 
+    if (altitudine < LIMITE_TROPOSFERA_STRATOSFERA) {
+        temperatura_kelvin = TEMPERATURA_LIV_MARE - (GRADIENTE_TERMICO_TROPOSFERA * altitudine);
+        double esponente = G_ACCEL / (R_GAS * GRADIENTE_TERMICO_TROPOSFERA);
+        // 3. Pressione: P = P0 * (T / T0)^esponente
+        pressione_attuale = PRESSIONE_SEA_LEVEL * pow(temperatura_kelvin / TEMPERATURA_LIV_MARE, esponente);
+        // 4. Densità: rho = P / (R * T)
+        densita_aria = pressione_attuale / (R_GAS * temperatura_kelvin);
+    } 
+    else if (altitudine < 20000.0) {
+        // 1. Temperatura fissa
+        temperatura_kelvin = TEMPERATURA_STRATOSFERA; // 216.65 K
+        // P = P_11k * e^(-g * delta_h / (R * T_strato))
+        double delta_h = altitudine - LIMITE_TROPOSFERA_STRATOSFERA;
+        double argomento_exp = (-G_ACCEL * delta_h) / (R_GAS * TEMPERATURA_STRATOSFERA);
+        pressione_attuale = PRESSIONE_11KM * exp(argomento_exp);
+        // 4. Densità
+        densita_aria = pressione_attuale / (R_GAS * temperatura_kelvin);
+    }
+    else {
+        temperatura_kelvin = TEMPERATURA_STRATOSFERA;
+        densita_aria = 0.088; 
+    }
 
     // Velocità del suono (Gas ideale): a = sqrt(gamma * R * T)
     double velocità_suono = sqrt(GAMMA * R_GAS * temperatura_kelvin);
@@ -398,18 +418,69 @@ double aggiorna_missile(
 
     calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k4_acc, modalita_terminale, NULL);
 
+
+
+
+
+// --- GESTIONE MANOVRA TARGET (Zoom Climb 62k ft/min) ---
+// --- PARAMETRI MANOVRA F-22 RAPTOR ---
+    double soglia_x_manovra = 1000.0;    // Trigger evasione (m)
+    
+    // Performance F-22
+    double max_g_load = 9.0 * 9.81;      // 9G Operativi (standard evasione)
+    double target_vz_limit = 350.0;      // Salita rapida (superiore ai caccia standard)
+    double target_vy_limit = 210.0;      // Velocità laterale (virata)
+    
+    // Ripartizione vettoriale dei G (Virata + Cabrata)
+    // L'F-22 usa il vettore di spinta per tirare G sia in verticale che laterale.
+    // Ipotizziamo una ripartizione: 7G per salire, 5.5G per virare (Totale vettoriale ~9G)
+    double acc_z_climb = 8.0 * 9.81;     
+    double acc_y_turn  = 7.5 * 9.81;     
+
+    // LOGICA EVASIONE "BREAK TURN & CLIMB"
+    if (posT[0] > soglia_x_manovra) {
+        
+        // 1. CABRATA (Asse Z) - Pull Up
+        if (velT[2] < target_vz_limit) {
+            velT[2] += acc_z_climb * dt;
+            // Clamp Z
+            if (velT[2] > target_vz_limit) velT[2] = target_vz_limit;
+        }
+
+        // 2. VIRATA DIFENSIVA (Asse Y) - Break Turn
+        // Questo costringe il missile a calcolare l'anticipo su due piani (Orizz. e Vert.)
+        if (velT[1] < target_vy_limit) {
+            velT[1] += acc_y_turn * dt;
+            // Clamp Y
+            if (velT[1] > target_vy_limit) velT[1] = target_vy_limit;
+        }
+
+        // 3. CONSERVAZIONE ENERGIA (F-22 Thrust-to-Weight > 1)
+        // Normalmente una virata fa perdere velocità frontale (X). 
+        // L'F-22 ha motori mostruosi, quindi perde pochissimo, ma per realismo
+        // riduciamo leggermente la V_x mentre manovra (Bleeding energy).
+        if (velT[0] > 250.0) { // Non scende sotto i 250 m/s
+             velT[0] -= 2.0 * dt; // Decelerazione leggera dovuta al drag indotto
+        }
+    }
+
     // --- SOMMA FINALE RK4 (Aggiornamento Cinematico) ---
     for(int i=0; i<3; i++) 
     {
-        // Aggiorna posizione
+        // Aggiorna posizione Missile (RK4)
         posM[i] += (dt / 6.0) * (k1_vel[i] + 2.0*k2_vel[i] + 2.0*k3_vel[i] + k4_vel[i]);
         
-        // Aggiorna velocità
+        // Aggiorna velocità Missile (RK4)
         velM[i] += (dt / 6.0) * (k1_acc[i] + 2.0*k2_acc[i] + 2.0*k3_acc[i] + k4_acc[i]);
         
-        // Aggiorna Target (moto rettilineo uniforme per questo dt)
+        // Aggiorna Posizione Target (Eulero)
+        // Usa la velocità velT aggiornata dalla logica di manovra qui sopra
         posT[i] += velT[i] * dt;
     }
+
+
+
+
 
     // --- 3. AGGIORNAMENTO CARBURANTE ---
     // Se c'è carburante, lo consumiamo in base a quanto abbiamo spinto (throttle_usato)

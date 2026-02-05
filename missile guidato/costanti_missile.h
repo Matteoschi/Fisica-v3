@@ -4,13 +4,19 @@
 /* COSTANTI FISICHE */
 #define G_ACCEL 9.80665              // m/s^2
 #define GAMMA 1.4                    // -
-#define R_GAS 287.05                 // J/(kg·K)
+#define R_GAS 287.05                // J/(kg·K)
 #define PI 3.141592653589793
 
-/* ATMOSFERA (ISA semplificata) */
+
+/* Atmosfera Standard USSA-1976 */
 #define DENSITA_ARIA_LIV_MARE 1.225  // kg/m^3
 #define PRESSIONE_SEA_LEVEL 101325.0 // Pa
 #define SCALE_HEIGHT 8400.0          // m (valore accettabile; 7500–8400 entrambe usate)
+#define TEMPERATURA_LIV_MARE 288.15  // K (15 °C)
+#define GRADIENTE_TERMICO_TROPOSFERA 0.0065 // K/m
+#define LIMITE_TROPOSFERA_STRATOSFERA 11000.0 // m
+#define TEMPERATURA_STRATOSFERA 216.65 // K (-56.5 °C)
+#define PRESSIONE_11KM 22632.10      // Pa
 
 /* REGIME COMPRESSIBILE */
 #define FATTORE_CORRETTIVO_MACH 2.3  // suggerito (meno aggressivo di 2.5)
@@ -34,7 +40,7 @@
 
 /* TERMICO / SICUREZZA */
 #define MAX_TEMP_STRUTTURA 750.0     // K
-#define MARGINE_SICUREZZA_TEMPERATURA 30.0          
+#define MARGINE_SICUREZZA_TEMPERATURA 20.0          
 #define EPSILON 1e-6
 #define OVERCLOCK 0
 
