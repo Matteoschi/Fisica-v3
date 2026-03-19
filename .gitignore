@@ -22,7 +22,6 @@ analisi maxdati.py
 # Output simulazioni
 output/
 *.csv
-*.tex
 *.xlsx
 *.bat
 tempCodeRunnerFile.py

@@ -1,0 +1,883 @@
+\documentclass[12pt,a4paper]{article}
+
+% --- Pacchetti Essenziali ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[italian]{babel}
+\usepackage{amsmath, amssymb, amsfonts} % Matematica avanzata
+\usepackage{geometry}   % Gestione margini
+\usepackage{graphicx}   % Immagini
+\usepackage{siunitx}    % Unità di misura SI
+\usepackage{physics}    % Notazione vettoriale e derivate parziali
+\usepackage{hyperref}   % Collegamenti ipertestuali
+\usepackage{fancyhdr}   % Intestazioni personalizzate
+\usepackage{booktabs}   % Tabelle di qualità
+\usepackage{cancel}     % Per cancellare termini nelle formule
+\usepackage{float} 
+
+% --- Impostazioni ---
+\geometry{margin=2.5cm}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{1.2ex}
+
+% --- Intestazione ---
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textbf{Analisi Aerodinamica}}
+\rhead{Modello 3-DOF}
+\cfoot{\thepage}
+
+\title{\textbf{Trattazione Teorica della Dinamica dei Fluidi e \\ Aerodinamica Applicata per Missili Supersonici}}
+\author{Documentazione Tecnica di Simulazione}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+
+\section{Introduzione}
+
+ Il presente documento illustra lo sviluppo e l'analisi fisico-matematica di un ambiente di simulazione a 3 Gradi di Libertà (3-DOF) per un missile intercettore a corto raggio.
+
+Mentre i modelli cinematici tradizionali si limitano a descrivere il moto geometrico assumendo prestazioni ideali, questo lavoro si propone di colmare il divario con la realtà fisica attraverso un approccio **semi-empirico non lineare**. La simulazione non considera il missile come un punto materiale a massa costante, ma come un sistema dinamico complesso soggetto a vincoli termodinamici, aerodinamici e propulsivi variabili nel tempo.
+
+In particolare, il modello integra tre domini fisici fondamentali:
+\begin{enumerate}
+    \item \textbf{Aerodinamica Comprimibile:} Abbandonando l'ipotesi di coefficienti costanti, si analizza l'interazione tra il corpo del missile e il fluido circostante tenendo conto delle variazioni termodinamiche dell'atmosfera (modello ISA), degli effetti di compressibilità nei regimi transonico e supersonico, e della degradazione delle prestazioni dovuta alla saturazione della portanza (stallo) e alla resistenza indotta (polare aerodinamica).
+    \item \textbf{Propulsione a Massa Variabile:} Si implementa l'equazione del razzo estesa, considerando la variazione del centro di massa e l'efficienza del propulsore ($I_{sp}$) in funzione della contropressione atmosferica locale.
+    \item \textbf{Guida e Controllo:} Il sistema è governato da una legge di Navigazione Proporzionale (PN) realistica, soggetta a saturazione strutturale (G-Limiter) e ritardi di attuazione.
+\end{enumerate}
+
+L'obiettivo finale è calcolare, istante per istante, il bilancio vettoriale delle forze (Spinta, Gravità, Portanza e Resistenza) per determinare con elevata fedeltà l'inviluppo di volo operativo e la probabilità di intercettazione ($P_k$) in scenari tattici realistici.
+
+% ==============================================================================
+\section{Cinematica Relativa e Geometria di Ingaggio}
+% ==============================================================================
+
+Per intercettare un bersaglio, è fondamentale definire le quantità vettoriali nel riferimento inerziale. Questo approccio permette di disaccoppiare il movimento del missile da quello del bersaglio fino al calcolo dell'errore di puntamento.
+
+
+
+Siano $\vec{P}_M$ e $\vec{P}_T$ i vettori posizione rispettivamente del missile e del target nello spazio cartesiano 3D.
+
+\subsection{Vettore Linea di Vista (LOS)}
+Il vettore \textbf{Linea di Vista} (Line of Sight, LOS), indicato con $\vec{r}$, rappresenta la distanza relativa vettoriale istantanea tra i due oggetti:
+
+\begin{equation}
+    \vec{r} = \vec{P}_T - \vec{P}_M = 
+    \begin{bmatrix} 
+        x_T - x_M \\ 
+        y_T - y_M \\ 
+        z_T - z_M 
+    \end{bmatrix}
+\end{equation}
+
+Questo vettore è fondamentale perché definisce la "corda" ideale che collega l'intercettore alla minaccia.
+
+\subsection{Distanza Scalare (Range)}
+La distanza scalare $R$ (Slant Range), ovvero la norma euclidea del vettore differenza, rappresenta la distanza fisica che il missile deve colmare:
+
+\begin{equation}
+    R = \|\vec{r}\| = \sqrt{(x_T - x_M)^2 + (y_T - y_M)^2 + (z_T - z_M)^2}
+\end{equation}
+
+\subsection{Versore di Puntamentto ($\hat{u}_{\text{LOS}}$)}
+Per determinare la direzione pura verso il bersaglio, indipendentemente dalla distanza, normalizziamo il vettore $\vec{r}$. Si ottiene così il versore unitario di puntamento $\hat{u}_{\text{LOS}}$, essenziale per calcolare gli angoli di aspetto e l'errore di guida:
+
+\begin{equation}
+    \hat{u}_{\text{LOS}} = \frac{\vec{r}}{R}
+\end{equation}
+
+L'algoritmo di guida utilizzerà successivamente la derivata temporale di questo versore ($\dot{\hat{u}}_{\text{LOS}}$) per determinare la velocità di rotazione della linea di vista, parametro chiave per la Navigazione Proporzionale.
+
+% ==============================================================================
+\section{Dinamica a Massa Variabile e Propulsione Adattiva}
+% ==============================================================================
+
+A differenza dei modelli a cinematica semplice, la simulazione gestisce la variazione di massa e inerzia del missile in modo dinamico. Il modello di propulsione non segue un profilo di combustione predeterminato a tempo fisso, ma integra un consumo di propellente variabile dipendente dalle condizioni operative (in particolare dalla limitazione termica).
+
+Definiamo $m_{\text{dry}}$ come la massa a vuoto del missile e $m_{\text{fuel}}(t)$ come la massa istantanea del propellente residuo.
+
+\subsection{Rateo di Combustione Modulato}
+Il consumo di propellente non è costante. Esso dipende dal rateo di flusso massico nominale del motore ($\dot{m}_{\text{max}}$) e dal fattore di parzializzazione della spinta $\eta(t)$ (Throttle), calcolato dal sistema di protezione termica (vedi Sez. 2.2).
+
+L'equazione differenziale che descrive la variazione di massa del carburante è:
+
+\begin{equation}
+    \frac{dm_{\text{fuel}}}{dt} = - \dot{m}_{\text{max}} \cdot \eta(t) \quad \left[\si{kg/s}\right]
+\end{equation}
+
+Dove:
+\begin{itemize}
+    \item $\dot{m}_{\text{max}}$ è il consumo specifico del motore alla massima potenza (Throttle 100\%).
+    \item $\eta(t) \in [0, 1]$ è il fattore di modulazione della spinta.
+\end{itemize}
+
+\subsection{Massa Istantanea e Integrazione}
+La massa totale del missile al tempo $t$ non è calcolabile analiticamente con una funzione lineare, ma è il risultato dell'integrazione numerica del consumo durante la storia del volo:
+
+\begin{equation} m(t) = m_{\text{dry}} + m_{\text{fuel},0} - \int_{0}^{t} \dot{m}_{\text{max}} , \eta(\tau) , d\tau \end{equation}
+
+Questa formulazione implica che la durata della fase propulsiva ($t_{\text{burn}}$) non è fissa. Se il missile è costretto a ridurre la spinta per limitare il riscaldamento aerodinamico ($\eta < 1$), il consumo di carburante diminuisce, estendendo la durata operativa del motore e aumentando la gittata efficace.
+
+\subsection{Fase Balistica (Coast)}
+La condizione di spegnimento del motore (Burn-out) si verifica quando la massa del propellente si annulla:
+
+\begin{equation}
+    m_{\text{fuel}}(t) \le 0 \implies F_{\text{thrust}} = 0
+\end{equation}
+
+Da questo istante in poi, la massa del sistema rimane costante e pari alla sola massa strutturale ($m(t) = m_{\text{dry}}$), e il missile prosegue il volo in fase puramente balistica dissipando energia cinetica contro la resistenza aerodinamica.
+
+% ==============================================================================
+\section{Legge di Guida: Navigazione Proporzionale (PN)}
+% ==============================================================================
+
+Il sistema di guida e controllo (G\&C) del missile è governato dall'algoritmo di **Navigazione Proporzionale (Pro-Nav)**. Questo è lo standard industriale per i missili intercettori a corto raggio (come la serie AIM-9 Sidewinder).
+
+Il principio fisico fondamentale è quello della \textit{Rotta di Collisione a Rilevamento Costante} (Constant Bearing Course):
+\begin{quote}
+    \textit{"Se due oggetti si muovono nello spazio e la linea che li congiunge non ruota mentre la distanza tra loro diminuisce, la collisione è geometricamente inevitabile."}
+\end{quote}
+
+L'obiettivo dell'algoritmo è annullare la velocità di rotazione della Linea di Vista (LOS Rate), trasformando la traiettoria del missile in una rotta di intercettazione ottimale.
+
+\subsection{Analisi della Velocità di Chiusura ($V_c$)}
+Definiamo il vettore velocità relativa $\vec{V}_{\text{rel}}$ come la differenza tra la velocità del bersaglio e quella del missile:
+\begin{equation}
+    \vec{V}_{\text{rel}} = \vec{V}_T - \vec{V}_M
+\end{equation}
+
+La \textbf{Velocità di Chiusura} ($V_c$, Closing Speed) rappresenta la rapidità con cui il missile si avvicina al bersaglio lungo la linea di vista. Matematicamente, è la proiezione cambiata di segno della velocità relativa sul versore di puntamento $\hat{u}_{\text{LOS}}$:
+\begin{equation}
+    V_c = - (\vec{V}_{\text{rel}} \cdot \hat{u}_{\text{LOS}}) = - \frac{dR}{dt}
+\end{equation}
+\begin{itemize}
+    \item Se $V_c > 0$: La distanza sta diminuendo (avvicinamento).
+    \item Se $V_c < 0$: Il bersaglio si sta allontanando.
+\end{itemize}
+Nella formula di guida, $V_c$ agisce come un fattore di scala dinamico: più l'avvicinamento è veloce, più aggressiva deve essere la manovra per correggere piccoli errori angolari.
+
+\subsection{Rateo di Rotazione della LOS ($\vec{\Omega}$)}
+Il parametro critico per la guida è la velocità angolare del vettore distanza $\vec{r}$.
+In cinematica vettoriale, la rotazione di un vettore posizionale è data dalla componente della velocità relativa perpendicolare al raggio, divisa per il raggio stesso.
+
+Il vettore velocità angolare $\vec{\Omega}$ (LOS Rate) si calcola tramite il prodotto vettoriale:
+\begin{equation}
+    \vec{\Omega} = \frac{\vec{r} \times \vec{V}_{\text{rel}}}{\|\vec{r}\|^2} \quad \left[ \frac{\text{rad}}{\text{s}} \right]
+\end{equation}
+
+Fisicamente, $\vec{\Omega}$ è un vettore assiale perpendicolare al piano di ingaggio (il piano formato da missile, target e velocità relativa). Il suo modulo indica quanto velocemente il bersaglio sta "sfuggendo" alla mira del missile.
+
+\subsection{Equazione del Comando di Accelerazione}
+La legge di Navigazione Proporzionale comanda un'accelerazione laterale $\vec{a}_{\text{cmd}}$ che tende ad annullare $\vec{\Omega}$. L'accelerazione deve essere applicata perpendicolarmente alla Linea di Vista per modificare la traiettoria nel modo più efficiente possibile.
+
+L'equazione vettoriale implementata è:
+\begin{equation}
+    \vec{a}_{\text{cmd}} = N \cdot V_c \cdot (\vec{\Omega} \times \hat{u}_{\text{LOS}})
+\end{equation}
+
+Dove:
+\begin{itemize}
+    \item $\vec{\Omega} \times \hat{u}_{\text{LOS}}$: Genera un vettore direzione perpendicolare alla LOS, che giace nel piano di ingaggio, opponendosi al movimento del target.
+    \item $N$: \textbf{Costante di Navigazione} (Guadagno effettivo). È un parametro adimensionale, tipicamente impostato tra 3.0 e 5.0.
+    \begin{itemize}
+        \item $N < 3$: La guida è "pigra", il missile insegue il bersaglio da dietro (Pure Pursuit) e rischia di non raggiungerlo.
+        \item $N > 5$: La guida è troppo reattiva, amplificando il rumore dei sensori e rischiando instabilità.
+    \end{itemize}
+\end{itemize}
+
+% ==============================================================================
+\section{Modello Atmosferico e Termodinamico}
+% ==============================================================================
+Il modello qui presentato adotta lo standard internazionale \textit{U.S. Standard Atmosphere 1976} (USSA-76). Al fine di coprire l'intero inviluppo di volo previsto per l'ingaggio (da \SI{0}{m} a \SI{20000}{m}), l'atmosfera è stata modellata dividendo il dominio verticale in due strati distinti, garantendo la continuità di pressione e densità all'interfaccia:
+\begin{itemize}
+    \item \textbf{Troposfera:} Dal livello del mare fino alla tropopausa ($\approx \SI{11}{km}$), caratterizzata da un gradiente termico negativo.
+    \item \textbf{Bassa Stratosfera:} Dalla tropopausa fino a \SI{20}{km}, modellata come regione isoterma.
+\end{itemize}
+
+Il calcolo delle proprietà puntuali dell'aria avviene in funzione dell'altitudine geometrica $h$. La densità, parametro critico per il calcolo della pressione dinamica, viene derivata conseguentemente dall'equazione di stato dei gas perfetti.
+
+\subsection{Regione 1: Troposfera ($0 \le h < H_{trop}$)}
+In questa regione, la dinamica atmosferica è dominata dal riscaldamento solare della superficie, che genera un decadimento lineare della temperatura con la quota. 
+
+La legge di variazione della temperatura è definita come:
+\begin{equation}
+    T(h) = T_0 - L \cdot h
+\end{equation}
+
+Integrando l'equazione fondamentale dell'idrostatica $dP = -\rho g dh$ e combinandola con l'equazione di stato, si ottiene l'andamento della pressione statica per un gradiente termico costante:
+\begin{equation}
+    P(h) = P_0 \cdot \left( \frac{T(h)}{T_0} \right)^{\frac{g_0}{R \cdot L}}
+\end{equation}
+Si nota come la pressione decada secondo una legge di potenza, influenzata dal rapporto tra la forza peso e l'energia termica del gas.
+
+\subsection{Regione 2: Bassa Stratosfera ($h \ge H_{trop}$)}
+Superata la tropopausa, la temperatura cessa di diminuire e si stabilizza. Questo fenomeno semplifica l'equazione idrostatica, trasformando il decadimento della pressione da una legge di potenza a una legge esponenziale pura.
+
+Per garantire la coerenza fisica del modello, è necessario calcolare la pressione di riferimento all'interfaccia dei due strati ($P_{11}$):
+\begin{equation}
+    P_{11} = P_0 \cdot \left( \frac{T_{strato}}{T_0} \right)^{\frac{g_0}{R \cdot L}} \approx \SI{22632.1}{Pa}
+\end{equation}
+
+In questa regione isoterma, le equazioni di stato diventano:
+\begin{equation}
+    T(h) = T_{strato}
+\end{equation}
+\begin{equation}
+    P(h) = P_{11} \cdot \exp\left( -\frac{g_0 \cdot (h - H_{trop})}{R \cdot T_{strato}} \right)
+\end{equation}
+
+\subsection{Determinazione della Densità}
+Nota la pressione $P(h)$ e la temperatura $T(h)$ in un dato punto, la densità $\rho(h)$ viene calcolata univocamente tramite l'equazione di stato dei gas perfetti. Questo passaggio è fondamentale poiché la densità è l'agente primario nella generazione delle forze aerodinamiche.
+\begin{equation}
+    \rho(h) = \frac{P(h)}{R \cdot T(h)}
+\end{equation}
+
+\subsection{Compressibilità e Numero di Mach}
+La velocità del suono locale $a$ varia esclusivamente in funzione della temperatura dell'aria. Poiché la temperatura decresce con la quota nella troposfera, anche la velocità del suono diminuisce.
+\begin{equation}
+    a = \sqrt{\gamma \cdot R \cdot T(h)}
+\end{equation}
+Il regime di compressibilità è definito dal Numero di Mach $M$, rapporto tra la velocità del vettore $V$ e la velocità del suono locale:
+\begin{equation}
+    M = \frac{V}{a}
+\end{equation}
+A parità di velocità vera ($V$), volare a quote più alte comporta un numero di Mach superiore, incrementando l'efficacia delle superfici di controllo ma anche la resistenza d'onda.
+
+\subsection{Pressione locale Dinamica ($q$)}
+La sintesi di densità e velocità confluisce nella \textbf{Pressione Dinamica} ($q$), che rappresenta l'energia cinetica per unità di volume del flusso incidente:
+
+\begin{equation}
+    q = \frac{1}{2} \rho(h) V^2
+\end{equation}
+
+Questa grandezza agisce come "moltiplicatore di forza" per l'intero sistema.
+\begin{itemize}
+    \item \textbf{Resistenza:} $D = q \cdot S \cdot C_D$
+    \item \textbf{Portanza:} $L = q \cdot S \cdot C_L$
+\end{itemize}
+Se $q$ scende sotto una soglia critica (es. volo lento in alta stratosfera), le superfici di controllo perdono autorità e il missile non è più in grado di manovrare, indipendentemente dalla volontà del sistema di guida.
+
+\subsection{Temperatura di Ristagno e Riscaldamento Aerodinamico}
+Mentre la temperatura statica $T(h)$ diminuisce con la quota, la temperatura termodinamica percepita dalla superficie del missile aumenta drasticamente all'aumentare della velocità. Quando il flusso d'aria supersonico impatta contro il punto di ristagno (il \textit{nose cone} o i bordi d'attacco delle alette), la sua energia cinetica viene quasi interamente convertita in energia interna (entalpia), generando un forte riscaldamento.
+
+La massima temperatura teorica raggiungibile dal fluido arrestato è definita \textbf{Temperatura di Ristagno} ($T_t$), calcolabile per un gas ideale in flusso adiabatico come:
+
+\begin{equation}
+    T_t = T(h) \cdot \left( 1 + \frac{\gamma - 1}{2} M^2 \right)
+\end{equation}
+
+Dove:
+\begin{itemize}
+    \item $T(h)$ è la temperatura statica alla quota di volo.
+    \item $M$ è il numero di Mach di volo ($v / a$).
+    \item $\gamma = 1.4$ è l'indice adiabatico (rapporto tra calori specifici $c_p/c_v$ per l'aria).
+\end{itemize}
+
+\subsection{Dinamica Transitoria e Temperatura di Recupero}
+Sebbene la temperatura di ristagno rappresenti il limite energetico superiore, assumere che l'intera struttura del missile raggiunga istantaneamente tale valore costituisce un'approssimazione eccessivamente conservativa. Nella realtà fisica, il riscaldamento aerodinamico è un processo dinamico governato da due fenomeni fondamentali: il recupero parziale dell'energia nello strato limite e l'inerzia termica del materiale.
+
+\paragraph{Temperatura di Recupero ($T_{rec}$)}
+Sulla maggior parte della fusoliera, il flusso d'aria non viene arrestato completamente (come avviene sul naso), ma scorre tangenzialmente alla superficie all'interno dello strato limite viscoso. A causa della dissipazione viscosa, solo una frazione dell'energia cinetica viene convertita in calore. La temperatura di equilibrio che il flusso adiabatico tende a imporre sulla parete è definita \textbf{Temperatura di Recupero}:
+
+\begin{equation}
+    T_{rec} = T(h) \cdot \left( 1 + r \cdot \frac{\gamma - 1}{2} M^2 \right)
+\end{equation}
+
+In questa equazione viene introdotto il \textbf{Fattore di Recupero} ($r$), un parametro adimensionale che quantifica l'efficienza della conversione energetica nello strato limite. Per un flusso supersonico turbolento, tipico di un missile tattico, si assume sperimentalmente:
+\[ r \approx \sqrt[3]{Pr} \approx 0.89 \]
+dove $Pr$ è il numero di Prandtl per l'aria. Questo implica che la temperatura operativa sulla pelle del missile ("Skin Temperature") tenderà a un valore leggermente inferiore rispetto alla temperatura di ristagno pura.
+
+\paragraph{Inerzia Termica e Legge del Riscaldamento}
+La struttura del missile possiede una massa e una capacità termica specifica che si oppongono alle variazioni istantanee di temperatura. Il trasferimento di calore dall'aria alla struttura non è immediato, ma avviene nel tempo attraverso un processo convettivo. 
+
+L'evoluzione temporale della temperatura della superficie ($T_{skin}$) è descritta da un'equazione differenziale del primo ordine, derivata dal bilancio energetico tra il flusso termico aerodinamico in ingresso e la capacità del materiale di assorbire calore:
+
+\begin{equation}
+    \frac{dT_{skin}}{dt} = K_{conv} \cdot (T_{rec} - T_{skin})
+\end{equation}
+
+Dove il termine $\frac{dT_{skin}}{dt}$ rappresenta la velocità di riscaldamento (o raffreddamento) della struttura. Il processo è guidato dalla differenza di temperatura tra l'aria circostante ($T_{rec}$) e la superficie del missile ($T_{skin}$).
+
+Il coefficiente di scambio termico globale $K_{conv}$ non è costante, ma varia dinamicamente in funzione delle condizioni di volo. In accordo con le correlazioni per il numero di Nusselt in regime turbolento, l'efficienza dello scambio termico aumenta con la densità dell'aria ($\rho$) e con la velocità del flusso ($V$):
+
+\begin{equation}
+    K_{conv} \propto \rho \cdot V^{0.8}
+\end{equation}
+
+Questa relazione implica due conseguenze fisiche rilevanti per la simulazione:
+\begin{enumerate}
+    \item A bassa quota e alta velocità (aria densa), il coefficiente $K_{conv}$ è elevato: la struttura si riscalda molto rapidamente, avvicinandosi velocemente alla temperatura critica.
+    \item Ad alta quota (aria rarefatta), nonostante il numero di Mach possa essere elevato, la bassa densità riduce drasticamente il coefficiente $K_{conv}$. Di conseguenza, il missile impiega molto più tempo per riscaldarsi, beneficiando di una "protezione naturale" dovuta alla rarefazione atmosferica.
+\end{enumerate}
+
+Questo modello permette di simulare realisticamente il comportamento termico durante le fasi di accelerazione (dove $T_{rec} > T_{skin}$) e le fasi di decelerazione o volo planato, dove la struttura calda cede calore all'aria più fredda ($T_{skin} > T_{rec}$).
+
+\subsubsection{Controllo Proattivo della Temperatura (Soft Limiter)}
+È evidente come la dipendenza da $M^2$ renda il riscaldamento il fattore limitante principale per voli ad alta velocità supersonica.
+Questa relazione impone un vincolo operativo critico: per evitare il cedimento strutturale, il sistema di controllo deve limitare la spinta affinché la temperatura di parete non superi la temperatura critica del materiale ($T_{max}$):
+
+\begin{equation}
+    T_{aw} \le T_{max}
+\end{equation}
+
+Nella simulazione, se $T_{aw}$ supera $T_{max}$, viene attivata una logica di \textit{Soft Limiter} che riduce la spinta del motore per diminuire il numero di Mach e, conseguentemente, il carico termico.
+A causa dell'inerzia dinamica del missile, il taglio istantaneo della spinta non arresta immediatamente l'aumento di temperatura, portando a fenomeni di \textit{overshoot} termico che compromettono la struttura.
+
+Per risolvere il problema, è stato implementato un algoritmo di controllo proporzionale che agisce preventivamente. Viene definito un margine di sicurezza $\Delta T_{margin}$ (nel codice impostato a \SI{25}{K}) che crea una zona di transizione prima del limite critico.
+
+Il coefficiente di modulazione della spinta $\eta$ (compreso tra 0 e 1) è calcolato secondo la seguente funzione a tratti:
+
+\begin{equation}
+    \eta(T_t) = 
+    \begin{cases} 
+        1 & \text{se } T_t < (T_{max} - \Delta T_{margin}) \\
+        1 - \frac{T_t - (T_{max} - \Delta T_{margin})}{\Delta T_{margin}} & \text{se } (T_{max} - \Delta T_{margin}) \le T_t \le T_{max} \\
+        0 & \text{se } T_t > T_{max}
+    \end{cases}
+\end{equation}
+
+In questo modo, la spinta effettiva $F_{thrust}$ viene ridotta linearmente man mano che la temperatura di ristagno entra nella "zona gialla", annullandosi dolcemente al raggiungimento esatto di $T_{max}$. Questo approccio garantisce che la velocità si stabilizzi asintoticamente al valore massimo sostenibile, eliminando i picchi di temperatura.
+
+
+
+
+
+
+
+% ==============================================================================
+\section{Propulsione Razzo }
+% ==============================================================================
+
+Il sistema propulsivo di un missile non è un attuatore a forza costante. La fisica della gasdinamica negli ugelli supersonici detta che le prestazioni del motore migliorino sensibilmente al diminuire della pressione atmosferica esterna. La simulazione implementa questo fenomeno, noto come variazione dell'Impulso Specifico ($I_{sp}$) con la quota.
+
+\subsection{Calcolo della Pressione Locale ($P_{atm}$)}
+Per determinare l'interazione tra i gas di scarico e l'ambiente, è necessario conoscere la pressione statica locale $P_{atm}(h)$. Utilizzando l'Equazione di Stato dei Gas Perfetti e le variabili termodinamiche derivate dal modello atmosferico (Densità $\rho$ e Temperatura $T$):
+
+\begin{equation}
+    P_{atm}(h) = \rho(h) \cdot R_{\text{spec}} \cdot T(h)
+\end{equation}
+
+Dove $R_{\text{spec}} \approx \SI{287.05}{J/(kg \cdot K)}$ è la costante specifica dell'aria secca. Questa pressione agisce come una forza frenante sulla sezione di uscita dell'ugello.
+
+\subsection{Teoria della Spinta Endoreattore}
+La spinta totale $F$ generata da un motore a razzo è la somma di due componenti distinti: la spinta dinamica (derivante dall'espulsione di massa) e la spinta statica (derivante dalla differenza di pressione). L'equazione fondamentale è:
+
+\begin{equation}
+    F = \underbrace{\dot{m} v_e}_{\text{Spinta di Impulso}} + \underbrace{(P_e - P_{atm}) A_e}_{\text{Spinta di Pressione}}
+\end{equation}
+
+Dove:
+\begin{itemize}
+    \item $\dot{m}$: Portata massica del propellente ($\si{kg/s}$).
+    \item $v_e$: Velocità di egresso dei gas rispetto all'ugello.
+    \item $P_e$: Pressione dei gas all'uscita dell'ugello.
+    \item $A_e$: Area della sezione di uscita dell'ugello (\texttt{AREA\_UGELLO}).
+\end{itemize}
+
+\subsection{ Il "Bonus" di Spinta nel Vuoto}
+Il termine di pressione $(P_e - P_{atm}) A_e$ rivela il comportamento fisico del motore al variare della quota:
+\begin{itemize}
+    \item \textbf{Al livello del mare ($P_{atm} = P_{sl}$):} L'atmosfera esercita una forte contropressione sull'ugello, riducendo la spinta netta.
+    \item \textbf{Nel vuoto ($P_{atm} \to 0$):} Il termine negativo svanisce. Il motore opera alla massima efficienza possibile (Vacuum Thrust).
+\end{itemize}
+
+Nel codice, assumiamo che il valore nominale di spinta fornito ($F_{sl}$) sia calibrato al livello del mare. La spinta reale alla quota $h$ viene calcolata aggiungendo un termine correttivo ("Bonus") pari alla differenza di pressione che \textit{non} sta più frenando il motore rispetto alla condizione al mare:
+
+\begin{equation}
+    F_{\text{totale}}(h) = F_{sl} + \underbrace{(P_{sl} - P_{atm}(h)) \cdot A_e}_{\text{Spinta Bonus}}
+\end{equation}
+
+\textbf{Interpretazione Fisica:} Man mano che il missile ascende, è come se un "tappo invisibile" (l'atmosfera) venisse gradualmente rimosso dall'ugello di scarico.
+A quote elevate ($\sim \SI{10000}{m}$), dove $P_{atm} \approx 0.26 P_{sl}$, il guadagno di spinta è significativo:
+\begin{equation}
+    \Delta F \approx (\SI{101325}{Pa} - \SI{26500}{Pa}) \cdot A_e = \SI{74825}{Pa} \cdot A_e
+\end{equation}
+Per un ugello tipico da missile ($A_e \approx \SI{0.0045}{m^2}$), ciò si traduce in circa $\SI{330}{N}$ di spinta extra "gratuita", che contribuisce a mantenere un'alta energia cinetica nella fase terminale dell'intercettazione.
+
+% ==============================================================================
+\section{Effetti di Compressibilità e Modellazione del Drag Aerodinamico}
+% ==============================================================================
+
+Nel volo ad alta velocità, il comportamento aerodinamico del missile è fortemente influenzato dagli effetti di compressibilità del fluido circostante. In particolare, l’avvicinamento alla barriera del suono segna una transizione critica, in cui le ipotesi di flusso incomprimibile cessano di essere valide e il campo di moto subisce profonde modificazioni. In questo regime, anche variazioni relativamente contenute del numero di Mach possono produrre incrementi significativi delle forze resistenti, con conseguenze dirette sulla dinamica del vettore e sulla sua capacità di manovra.
+
+Per garantire una rappresentazione fisicamente consistente dell’inviluppo di volo, è pertanto necessario introdurre un modello che catturi, seppur in forma semplificata, la divergenza del drag associata agli effetti transonici e supersonici. A tal fine, si adotta una parametrizzazione dipendente dal numero di Mach, volta a modellare l’insorgenza del wave drag e il conseguente deterioramento delle prestazioni aerodinamiche del missile.
+
+% ------------------------------------------------------------------------------
+\subsection{Effetti di Compressibilità e Divergenza del Drag}
+% ------------------------------------------------------------------------------
+
+L'avvicinamento al regime transonico comporta una drastica alterazione del campo di moto attorno al missile. La formazione di onde d'urto locali e l'aumento dell'entropia causano un incremento non lineare della resistenza aerodinamica, noto come \textit{Wave Drag}.
+Tale fenomeno è modellato introducendo un fattore correttivo di Mach $\beta(M)$, che amplifica il coefficiente di resistenza parassita in prossimità della barriera del suono:
+
+\begin{equation}
+    \beta(M) =
+    \begin{cases}
+        1.0 & M < 0.8 \quad (\text{Regime Subsonico}) \\[6pt]
+        1.0 + k_{\text{wave}} (M - 0.8) & 0.8 \le M < 1.2 \quad (\text{Regime Transonico}) \\[6pt]
+        \beta_{\max} & M \ge 1.2 \quad (\text{Regime Supersonico})
+    \end{cases}
+\end{equation}
+
+Questa parametrizzazione lineare a tratti approssima la singolarità di Prandtl-Glauert, simulando l'energia dissipata per vincere gli effetti di compressibilità critica.
+
+% ------------------------------------------------------------------------------
+\subsection{Resistenza Parassita e d'Onda ($C_{D_0}$)}
+% ------------------------------------------------------------------------------
+Anche in volo rettilineo ($Lift = 0$), il missile subisce una forza resistente dovuta all'attrito viscoso e, in regime transonico/supersonico, alla formazione di onde d'urto (Wave Drag).
+Il coefficiente di base $C_{D_0}$ è funzione esclusiva del numero di Mach:
+
+\begin{equation}
+    C_{D_0}(M) = C_{\text{friction}} + C_{\text{wave}}(M)
+\end{equation}
+
+Questo termine rappresenta il "costo di esistenza" del missile nell'aria.
+
+% ------------------------------------------------------------------------------
+\section{Flight Envelope Protection}
+% ------------------------------------------------------------------------------
+
+La manovrabilità del missile è subordinata alla capacità delle superfici di controllo (alette) di generare portanza senza incorrere nel distacco della vena fluida (\textit{Stallo}).
+Il massimo coefficiente di portanza sostenibile $C_{L_{\max}}$ non è costante, ma degrada alle alte velocità supersoniche a causa dello spostamento del centro di pressione e della diminuzione dell'efficienza delle alette:
+
+\begin{equation}
+    C_{L_{\max}}(M) = C_{L0} \cdot e^{-k_M (M - 1)^2}
+\end{equation}
+
+Dove $C_{L0}$ rappresenta il coefficiente massimo in condizioni ideali e $k_M$ è il fattore di decadimento supersonico.
+Di conseguenza, la massima forza aerodinamica laterale $F_{\text{aero,max}}$ generabile in un dato istante è funzione diretta della pressione dinamica locale $q$:
+
+\begin{equation}
+    F_{\text{aero,max}} = q \cdot S_{\text{ref}} \cdot C_{L_{\max}}(M) 
+\end{equation}
+
+Applicando la Seconda Legge di Newton, determiniamo il limite superiore di accelerazione imposto dal fluido:
+
+\begin{equation}
+    a_{\text{fluid}} = \frac{F_{\text{aero,max}}}{m(t)} = \frac{q \, S_{\text{ref}} \, C_{L_{\max}}(M)}{m(t)}
+\end{equation}
+
+\textbf{Nota Fisica:} A quote elevate o basse velocità, dove $q$ tende a zero, $a_{\text{fluid}}$ diviene trascurabile. In tali condizioni, il missile perde autorità di controllo, indipendentemente dalla volontà del sistema di guida.
+
+% ------------------------------------------------------------------------------
+\subsection{Vincoli di Integrità Strutturale}
+% ------------------------------------------------------------------------------
+
+Indipendentemente dalle condizioni aerodinamiche, il vettore è soggetto a limiti meccanici invalicabili. Il telaio e i giunti delle alette sono dimensionati per sopportare un fattore di carico massimo $n_{\text{lim}}$ prima di subire deformazioni plastiche o cedimenti catastrofici:
+
+\begin{equation}
+    a_{\text{struct}} = n_{\text{lim}} \cdot g_0
+\end{equation}
+
+Per missili tattici a corto raggio, $n_{\text{lim}}$ si attesta tipicamente tra $30$ e $40$ G.
+
+% ------------------------------------------------------------------------------
+\subsection{Limiti di Accelerazione e Inviluppo di Volo del Missile}
+% ------------------------------------------------------------------------------
+
+L'accelerazione massima effettivamente disponibile $a_{\text{lim}}$ in ogni istante di simulazione è definita dall'intersezione dei vincoli sopra esposti. Il missile opera sempre sotto il più restrittivo dei due limiti (minimo logico):
+
+\begin{equation}
+    a_{\text{lim}} = \min \left( a_{\text{fluid}}, \; a_{\text{struct}} \right)
+\end{equation}
+
+Questa equazione definisce matematicamente il \textbf{Diagramma V-n} (Velocità-Carico) istantaneo:
+\begin{itemize}
+    \item Al di sotto della \textit{Corner Velocity}, il missile è limitato aerodinamicamente (Stallo).
+    \item Al di sopra della \textit{Corner Velocity}, il missile è limitato strutturalmente (G-Limit).
+\end{itemize}
+
+% ------------------------------------------------------------------------------
+\subsubsection{Algoritmo di Saturazione Vettoriale}
+% ------------------------------------------------------------------------------
+
+Il sistema di guida genera un vettore di accelerazione comandata ideale
+$\vec{a}_{\text{cmd}}$. Tuttavia, la capacità del missile di seguire tale richiesta è
+limitata dall’inviluppo di volo istantaneo. Qualora il modulo
+dell’accelerazione comandata ecceda il limite disponibile $a_{\text{lim}}$, è
+necessario applicare una saturazione che preservi la direzione del comando,
+riducendone esclusivamente l’intensità.
+
+L’accelerazione effettivamente applicata al vettore $\vec{a}_{\text{real}}$ è quindi
+definita mediante una saturazione vettoriale isotropa:
+
+\begin{equation}
+\vec{a}_{\text{real}} =
+\vec{a}_{\text{cmd}} \cdot
+\min \left( 1,\; \frac{a_{\text{lim}}}{\|\vec{a}_{\text{cmd}}\|} \right)
+\end{equation}
+
+In forma esplicita, nel caso di saturazione
+($\|\vec{a}_{\text{cmd}}\| > a_{\text{lim}}$), l’espressione si riduce a:
+
+\begin{equation}
+\vec{a}_{\text{real}} =
+a_{\text{lim}} \cdot
+\frac{\vec{a}_{\text{cmd}}}{\|\vec{a}_{\text{cmd}}\|}
+=
+a_{\text{lim}} \cdot \hat{u}_{\text{cmd}}
+\end{equation}
+
+dove $\hat{u}_{\text{cmd}}$ rappresenta il versore associato alla direzione del
+comando di guida. Tale formulazione garantisce la conservazione della direzione
+di manovra richiesta dalla legge di guida, evitando al contempo violazioni dei
+vincoli aerodinamici e strutturali.
+
+L’approccio adottato assicura stabilità numerica dell’integratore e coerenza
+fisica della simulazione, impedendo l’esecuzione di manovre energeticamente o
+strutturalmente non realizzabili.
+
+\subsection{Limiti Operativi (Seeker e Aerodinamica)}
+
+ Il sistema azzera l'accelerazione comandata ($\vec{a}_{cmd} = 0$) se si verifica almeno una delle seguenti condizioni critiche:
+
+\begin{enumerate}
+    \item \textbf{Inefficacia Aerodinamica:} La pressione dinamica ($q$) è inferiore a una soglia minima (5000 Pa), rendendo le superfici di controllo inefficaci (stallo a bassa velocità).
+    \item \textbf{Perdita del Tracciamento (Gimbal Limit):} L'angolo di disallineamento ($\theta$) tra il vettore velocità del missile e la linea di vista (Line of Sight) supera il campo visivo massimo del sensore ($\theta_{max}$).
+\end{enumerate}
+
+La condizione logica implementata è espressa dalla disuguaglianza:
+
+\[
+q < q_{min} \quad \lor \quad (\hat{v}_m \cdot \hat{u}_{LOS}) < \cos\left(\theta_{FOV}\right)
+\]
+
+\subsection{Mappatura dei codici di stato e diagnostica di volo}
+Gli stati operativi del missile sono definiti in modo univoco all'interno dell'architettura di controllo, garantendo la coerenza delle informazioni tra il computer di bordo e il sistema di telemetria. La Tabella riassume la corrispondenza tra i codici di stato e le condizioni fisiche del vettore, distinguendo tra gli interventi di protezione attiva (che limitano le prestazioni per preservare il missile) e le situazioni di pericolo critico.
+
+Un ruolo fondamentale è svolto dalla logica di Endgame Strategy: il sistema monitora costantemente la cinematica relativa tra il missile e il bersaglio. Quando la distanza di intercettazione scende al di sotto della soglia operativa predefinita (configurata a 1000 m), il computer di guida forza automaticamente una transizione verso la modalità di combattimento terminale. In questa fase, analoga funzionalmente alla modalità Overclock, i limitatori di sicurezza termici e strutturali vengono bypassati. Il sistema autorizza quindi manovre ad alto carico G, accettando il rischio di danni strutturali o surriscaldamento pur di massimizzare la probabilità di impatto (Hit Probability) negli istanti finali del volo.
+% Piè di pagina per l'ULTIMA pagina
+\begin{table}[ht!]
+    \centering
+    \renewcommand{\arraystretch}{1.4} % Spaziatura righe per migliore leggibilità
+    \begin{tabular}{|c|l|p{7.5cm}|}
+        \hline
+        \textbf{Valore} & \textbf{Macro (C)} & \textbf{Descrizione Fisica} \\
+        \hline
+        \multicolumn{3}{|c|}{\textbf{MODALITÀ STANDARD (Protezione Attiva)}} \\
+        \hline
+        \textbf{0} & \texttt{STATUS\_OK} & \textbf{Nominale.} Il missile opera correttamente all'interno dell'inviluppo di volo. \\
+        \hline
+        \textbf{1} & \texttt{STATUS\_LIMIT\_STRUCTURAL} & \textbf{Limite Strutturale.} L'accelerazione richiesta supera i 35g. Il sistema limita la manovra per prevenire danni al telaio. \\
+        \hline
+        \textbf{2} & \texttt{STATUS\_LIMIT\_AERO} & \textbf{Saturazione Aerodinamica.} Richiesta di portanza superiore al $C_{L_{max}}$. Il missile è limitato dalla fisica delle alette. \\
+        \hline
+        \textbf{4} & \texttt{STATUS\_LIMIT\_TEMP} & \textbf{Soft Limit Termico.} Temperatura di ristagno elevata. Il sistema riduce la spinta (throttling) per il raffreddamento. \\
+        \hline
+        \textbf{8} & \texttt{STATUS\_LIMIT\_SPEED} & \textbf{Hard Limit Velocità.} Temperatura critica raggiunta. Taglio drastico del motore per evitare il cedimento strutturale. \\
+        \hline
+        \textbf{16} & \texttt{STATUS\_LOCK\_LOST} & \textbf{Perdita Lock.} Il target è uscito dal cono di visuale (FOV). Guida disattivata. \\
+        \hline
+        \textbf{32} & \texttt{STATUS\_STALL\_SPEED} & \textbf{Stallo Velocità.} Pressione dinamica insufficiente ($q < q_{min}$) per il controllo aerodinamico. \\
+        \hline
+        
+        \multicolumn{3}{|c|}{\textbf{MODALITÀ OVERCLOCK (Protezione Disabilitata)}} \\
+        \hline
+        \textbf{64} & \texttt{STATUS\_OVERCLOCK\_TEMP} & \textbf{Pericolo Termico.} Temperatura oltre i limiti di progetto. Rischio fusione della cupola sensore. \\
+        \hline
+        \textbf{128} & \texttt{STATUS\_OVERCLOCK\_SPEED} & \textbf{Pericolo Ipersonico.} Velocità estrema non limitata. Rischio disintegrazione per attrito. \\
+        \hline
+        \textbf{256} & \texttt{STATUS\_OVERCLOCK\_STRUCT} & \textbf{Pericolo Strutturale.} G-Load oltre i 35g. Rischio imminente di spezzare il missile. \\
+        \hline
+        \textbf{512} & \texttt{STATUS\_OVERCLOCK\_AERO} & \textbf{Stallo Profondo.} Richiesta superiore al $C_{L_{max}}$. \textbf{Limitatore Fisico attivo:} le ali non possono generare la forza richiesta, ma viene segnalata la saturazione critica. \\
+        \hline
+    \end{tabular}
+    \label{tab:codici_stato_completi}
+\end{table}
+
+\clearpage
+
+% ==============================================================================
+\section{Bilancio Resistivo e Dissipazione Energetica}
+% ==============================================================================
+
+La generazione di una forza portante (Lift) per modificare la traiettoria non è un processo termodinamicamente gratuito. Ogni manovra impone una penalità energetica sotto forma di resistenza aerodinamica aggiuntiva.
+Questa sezione analizza la catena causale che trasforma una richiesta di accelerazione in una perdita di velocità.
+
+% ------------------------------------------------------------------------------
+\subsection{Determinazione del Coefficiente di Portanza ($C_L$)}
+% ------------------------------------------------------------------------------
+Il sistema di guida comanda un vettore accelerazione $\vec{a}_{\text{cmd}}$. Per convertire questa grandezza cinematica in una grandezza fluidodinamica, applichiamo la Seconda Legge della Dinamica.
+
+La forza di Portanza $L$ necessaria per eseguire la virata è proporzionale alla massa istantanea del missile:
+\begin{equation}
+    L_{\text{req}} = m(t) \cdot \|\vec{a}_{\text{cmd}}\|
+\end{equation}
+
+Dalla definizione aerodinamica, la portanza è generata dalla pressione dinamica $q$ che agisce sulla superficie di riferimento $S_{\text{ref}}$, modulata dal coefficiente $C_L$:
+\begin{equation}
+    L_{\text{req}} = q \cdot S_{\text{ref}} \cdot C_L
+\end{equation}
+
+Uguagliando le due espressioni e risolvendo per $C_L$, otteniamo il coefficiente operativo necessario per sostenere la manovra:
+
+\begin{equation}
+    C_L = \frac{m(t) \cdot \|\vec{a}_{\text{cmd}}\|}{q \cdot S_{\text{ref}}}
+\end{equation}
+
+\textbf{Implicazione Fisica:} Questa equazione mostra che il coefficiente $C_L$ (e quindi l'angolo di attacco delle alette) deve aumentare drasticamente se:
+\begin{itemize}
+    \item Il missile è pesante (pieno di carburante).
+    \item Il missile vola lento o molto alto ($q$ basso).
+\end{itemize}
+
+% ------------------------------------------------------------------------------
+\subsection{Resistenza Indotta e Vorticità ($C_{D_i}$)}
+% ------------------------------------------------------------------------------
+Un alto valore di $C_L$ implica una forte differenza di pressione tra il dorso e il ventre delle alette. Alle estremità delle superfici, il fluido tende a compensare questo gradiente generando **vortici di estremità** (wingtip vortices).
+
+L'energia cinetica rotazionale dissipata in questi vortici è modellata come \textbf{Resistenza Indotta}:
+
+\begin{equation}
+    C_{D_i} = k \cdot C_L^2
+\end{equation}
+
+Dove $k \approx 0.05$ è il fattore di efficienza aerodinamica.
+
+\textbf{Il Fenomeno del "Bleeding Energy":}
+La dipendenza quadratica da $C_L$ (e quindi dal quadrato dell'accelerazione richiesta) è l'aspetto tattico più critico. Raddoppiare i G di virata quadruplica la resistenza indotta. Manovre aggressive ad alti angoli di attacco agiscono come un freno aerodinamico, causando un decadimento rapido della velocità.
+
+% ------------------------------------------------------------------------------
+\subsection{Coefficiente di Resistenza Totale}
+% ------------------------------------------------------------------------------
+Il coefficiente di resistenza complessivo $C_{D_{\text{tot}}}$ è la somma della componente parassita e di quella indotta (Polare Parabolica):
+
+\begin{equation}
+    C_{D_{\text{tot}}} = \underbrace{C_{D_0}(M)}_{\text{Regime Mach}} + \underbrace{k \cdot C_L^2}_{\text{Costo Manovra}}
+\end{equation}
+
+% ------------------------------------------------------------------------------
+\subsection{Calcolo della Forza Resistiva Finale}
+% ------------------------------------------------------------------------------
+La forza di resistenza vettoriale $\vec{D}$ è sempre diretta in senso opposto al versore velocità $\hat{u}_v$:
+
+\begin{equation}
+    \vec{D} = - \left( q \cdot S_{\text{ref}} \cdot C_{D_{\text{tot}}} \right) \hat{u}_v
+\end{equation}
+
+Questa è la forza dissipativa che viene integrata nelle equazioni del moto e che determina la gittata massima effettiva (Dynamic Launch Zone) del missile contro un bersaglio manovrante.
+% ==============================================================================
+\section{Dinamica del Corpo Rigido e Bilancio delle Forze}
+% ==============================================================================
+
+L'integrazione dello stato del missile nel tempo richiede la risoluzione della Seconda Legge della Dinamica nel riferimento inerziale tridimensionale.
+In questa fase, tutte le grandezze scalari derivate nei capitoli precedenti (Spinta corretta, Drag, Accelerazione comandata) vengono proiettate nello spazio vettoriale $\mathbb{R}^3$ per determinare l'accelerazione istantanea totale.
+
+% ------------------------------------------------------------------------------
+\subsection{Definizione dei Versori di Riferimento}
+% ------------------------------------------------------------------------------
+Per proiettare correttamente le forze aerodinamiche e propulsive, definiamo il **Versore Velocità** $\hat{u}_v$, che indica la direzione istantanea del moto:
+
+\begin{equation}
+    \hat{u}_v = \frac{\vec{V}_M}{\|\vec{V}_M\|} = \begin{bmatrix} v_x / V \\ v_y / V \\ v_z / V \end{bmatrix}
+\end{equation}
+
+Assumendo un'incidenza limitata (ipotesi di piccolo angolo di attacco, valida per missili 3-DOF ad alta velocità), il vettore spinta e il vettore resistenza sono allineati a questo versore.
+
+% ------------------------------------------------------------------------------
+\subsection{Scomposizione delle Forze Agenti}
+% ------------------------------------------------------------------------------
+Sul baricentro del missile agiscono quattro forze fondamentali, che classifichiamo in "Balistiche" (longitudinali/gravitazionali) e "di Manovra" (trasversali).
+
+\subsubsection{Forza Propulsiva ($\vec{F}_T$)}
+La spinta, calcolata tenendo conto dell'espansione nell'ugello ($I_{sp}$ variabile), agisce lungo l'asse longitudinale del missile, spingendolo nella direzione del moto:
+\begin{equation}
+    \vec{F}_T = T_{\text{totale}}(h) \cdot \hat{u}_v
+\end{equation}
+
+\subsubsection{Forza Resistiva ($\vec{F}_D$)}
+La resistenza aerodinamica (Drag) è una forza dissipativa che si oppone sempre al vettore velocità. Include sia la componente parassita che quella indotta dalla manovra:
+\begin{equation}
+    \vec{F}_D = - D_{\text{mag}} \cdot \hat{u}_v = - \left( \frac{1}{2} \rho V^2 S C_{D_{\text{tot}}} \right) \hat{u}_v
+\end{equation}
+Il segno negativo indica l'opposizione al moto.
+
+\subsubsection{Forza Gravitazionale ($\vec{F}_g$)}
+La gravità agisce uniformemente lungo l'asse verticale negativo del sistema di riferimento inerziale (ENU - East North Up):
+\begin{equation}
+    \vec{F}_g = m(t) \cdot \vec{g} = \begin{bmatrix} 0 \\ 0 \\ -m(t) \cdot g_0 \end{bmatrix}
+\end{equation}
+
+\subsubsection{Forza di Portanza/Guida ($\vec{F}_L$)}
+Il sistema di guida, attraverso la legge Pro-Nav saturata, richiede una accelerazione laterale $\vec{a}_{\text{guida}}$. Questa corrisponde fisicamente alla forza di Portanza (Lift) generata dalle alette:
+\begin{equation}
+    \vec{F}_L = m(t) \cdot \vec{a}_{\text{guida}}
+\end{equation}
+Questa forza è per definizione perpendicolare al vettore velocità ($\vec{F}_L \perp \hat{u}_v$).
+
+% ------------------------------------------------------------------------------
+\subsection{Equazione Vettoriale del Moto}
+% ------------------------------------------------------------------------------
+Applicando il principio di sovrapposizione, l'accelerazione totale $\vec{a}_{\text{tot}}$ è data dalla somma vettoriale di tutte le forze esterne, normalizzata per la massa istantanea $m(t)$ che decresce durante la combustione.
+
+L'equazione implementata nel solver numerico è:
+
+\begin{equation}
+    \vec{a}_{\text{tot}}(t) = \frac{\sum \vec{F}_{\text{ext}}}{m(t)} = \frac{\vec{F}_T + \vec{F}_D + \vec{F}_g + \vec{F}_L}{m(t)}
+\end{equation}
+
+Espandendo i termini, otteniamo la formulazione finale utilizzata nel ciclo di integrazione:
+
+\begin{equation}
+    \vec{a}_{\text{tot}} = \underbrace{\left( \frac{T_{\text{totale}} - D_{\text{mag}}}{m(t)} \right) \hat{u}_v}_{\text{Accelerazione Longitudinale}} + \underbrace{\vec{g}}_{\text{Accelerazione Gravitazionale}} + \underbrace{\vec{a}_{\text{guida}}}_{\text{Accelerazione Trasversale}}
+\end{equation}
+
+\textbf{Analisi dei Componenti:}
+\begin{itemize}
+    \item Il primo termine gestisce il bilancio energetico (accelerazione o frenata).
+    \item Il secondo termine incurva la traiettoria verso il basso (caduta balistica).
+    \item Il terzo termine (Guida) modifica la direzione del vettore velocità per intercettare il bersaglio.
+\end{itemize}
+
+Questa equazione differenziale vettoriale viene risolta iterativamente (via Runge-Kutta o Eulero) per aggiornare la velocità e la posizione del missile ad ogni passo temporale $\Delta t$.
+
+
+\section{Modellazione della Massa Dinamica}
+
+Il modello computazionale aggiorna lo stato fisico del sistema considerando la natura non conservativa della massa durante la fase propulsiva. La massa totale istantanea $m_{tot}(t)$ è definita dalla somma della massa strutturale inerziale ($m_{dry}$) e della massa del propellente residuo ($m_{fuel}$), monitorata in tempo reale tramite un integratore di flusso:
+
+\begin{equation}
+    m_{tot}(t) = m_{dry} + m_{fuel}(t)
+\end{equation}
+
+\subsection{Cut-off}
+Per garantire il realismo fisico e prevenire instabilità numeriche, è stata implementata una logica di \textit{cut-off} (spegnimento) che agisce sulla spinta nominale $F_{nom}$. Se la massa del propellente scende al di sotto di una soglia di tolleranza infinitesima $\epsilon$ (fissata a $10^{-6}$ kg), il motore viene considerato esausto. 
+
+La spinta effettivamente disponibile $F_{avail}$ viene quindi modulata secondo la seguente condizione logica:
+
+\begin{equation}
+    F_{avail} = 
+    \begin{cases} 
+        F_{nom} & \text{se } m_{fuel} > \epsilon \\
+        0 & \text{se } m_{fuel} \le \epsilon
+    \end{cases}
+\end{equation}
+
+Questa implementazione assicura che, una volta esaurita la frazione di massa reattiva, il missile transiti istantaneamente dalla fase di volo propulso alla fase balistica (o di \textit{coasting}), mantenendo da quel momento in poi una massa costante pari a $m_{dry}$. Tale transizione è fondamentale per la corretta valutazione della conservazione dell'energia cinetica residua nelle fasi finali dell'ingaggio.
+
+% ------------------------------------------------------------------------------
+\section{L'Algoritmo RK4}
+% ------------------------------------------------------------------------------
+Le equazioni differenziali del moto derivate nelle sezioni precedenti sono altamente non lineari e accoppiate. La dipendenza della resistenza dal Mach, la variazione della spinta con la quota e le discontinuità introdotte dalla saturazione della guida rendono impossibile una soluzione analitica (esatta).
+
+È necessario discretizzare il tempo in piccoli intervalli $\Delta t$ e calcolare l'evoluzione dello stato del sistema passo dopo passo.
+Per garantire la stabilità numerica e minimizzare l'errore di troncamento, la simulazione abbandona il semplice metodo di Eulero (1° ordine) in favore del metodo **Runge-Kutta del 4° ordine (RK4)**.
+
+L'algoritmo RK4 stima il nuovo stato $\mathbf{Y}_{n+1}$ al tempo $t + \Delta t$ calcolando quattro pendenze (o derivate) intermedie ($k_1, k_2, k_3, k_4$) e combinandole con una media pesata.
+
+Nel codice, queste pendenze sono separate in componenti di velocità (\texttt{k\_vel}) e di accelerazione (\texttt{k\_acc}).
+
+\subsubsection{Pendenza Iniziale ($k_1$)}
+Si calcola la fisica allo stato attuale. Questa è la pendenza all'inizio dell'intervallo (Equivalente a Eulero).
+\begin{align}
+    \vec{k}_{1, \text{vel}} &= \vec{V}_n \\
+    \vec{k}_{1, \text{acc}} &= \vec{a}_{\text{tot}}(\vec{P}_n, \vec{V}_n)
+\end{align}
+\textit{Nota: In questo step viene anche estratta la telemetria per il data logging.}
+
+\subsubsection{Step 2: Pendenza Media A ($k_2$)}
+Si stima uno stato a metà passo ($\Delta t / 2$) utilizzando la pendenza $k_1$, e si ricalcola la fisica in quel punto provvisorio.
+\begin{align}
+    \vec{P}_{\text{temp}} &= \vec{P}_n + \vec{k}_{1, \text{vel}} \cdot \frac{\Delta t}{2} \\
+    \vec{V}_{\text{temp}} &= \vec{V}_n + \vec{k}_{1, \text{acc}} \cdot \frac{\Delta t}{2} \\
+    \vec{k}_{2, \text{acc}} &= \vec{a}_{\text{tot}}(\vec{P}_{\text{temp}}, \vec{V}_{\text{temp}})
+\end{align}
+
+\subsubsection{Pendenza Media B ($k_3$)}
+Si stima nuovamente lo stato a metà passo, ma questa volta utilizzando la pendenza aggiornata $k_2$. Questo corregge la stima precedente.
+\begin{align}
+    \vec{P}_{\text{temp}} &= \vec{P}_n + \vec{k}_{2, \text{vel}} \cdot \frac{\Delta t}{2} \\
+    \vec{V}_{\text{temp}} &= \vec{V}_n + \vec{k}_{2, \text{acc}} \cdot \frac{\Delta t}{2} \\
+    \vec{k}_{3, \text{acc}} &= \vec{a}_{\text{tot}}(\vec{P}_{\text{temp}}, \vec{V}_{\text{temp}})
+\end{align}
+
+\subsubsection{Pendenza Finale ($k_4$)}
+Si proietta lo stato alla fine dell'intervallo ($\Delta t$) utilizzando la pendenza $k_3$.
+\begin{align}
+    \vec{P}_{\text{temp}} &= \vec{P}_n + \vec{k}_{3, \text{vel}} \cdot \Delta t \\
+    \vec{V}_{\text{temp}} &= \vec{V}_n + \vec{k}_{3, \text{acc}} \cdot \Delta t \\
+    \vec{k}_{4, \text{acc}} &= \vec{a}_{\text{tot}}(\vec{P}_{\text{temp}}, \vec{V}_{\text{temp}})
+\end{align}
+
+
+
+% ------------------------------------------------------------------------------
+\subsection{Aggiornamento dello Stato}
+% ------------------------------------------------------------------------------
+Il nuovo stato al tempo $t + \Delta t$ è calcolato come media pesata delle quattro pendenze. I termini centrali ($k_2, k_3$) hanno peso doppio perché rappresentano la stima più affidabile al centro dell'intervallo.
+
+\begin{equation}
+    \mathbf{Y}_{n+1} = \mathbf{Y}_n + \frac{\Delta t}{6} \left( \mathbf{k}_1 + 2\mathbf{k}_2 + 2\mathbf{k}_3 + \mathbf{k}_4 \right)
+\end{equation}
+
+Esplicitando per Posizione e Velocità:
+\begin{align}
+    \vec{P}_{n+1} &= \vec{P}_n + \frac{\Delta t}{6} (\vec{k}_{1, \text{vel}} + 2\vec{k}_{2, \text{vel}} + 2\vec{k}_{3, \text{vel}} + \vec{k}_{4, \text{vel}}) \\
+    \vec{V}_{n+1} &= \vec{V}_n + \frac{\Delta t}{6} (\vec{k}_{1, \text{acc}} + 2\vec{k}_{2, \text{acc}} + 2\vec{k}_{3, \text{acc}} + \vec{k}_{4, \text{acc}})
+\end{align}
+
+\subsection{Vantaggi Computazionali}
+L'errore globale del metodo RK4 scala con $\mathcal{O}(\Delta t^4)$. Questo significa che dimezzare il passo di calcolo riduce l'errore di un fattore $16$. Tale precisione è indispensabile per simulare correttamente l'intercettazione terminale, dove le distanze si riducono rapidamente e le accelerazioni (dovute alla guida e al drag) variano bruscamente.
+
+
+\section{Costanti Fisiche di Riferimento}
+Il modello si basa su un set di costanti fisiche fondamentali e parametri atmosferici standard definiti a livello del mare. Tali valori costituiscono le condizioni al contorno per l'integrazione delle equazioni idrostatiche.
+
+\begin{table}[h]
+    \centering
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{@{}lcl@{}}
+        \toprule
+        \textbf{Grandezza Fisica} & \textbf{Simbolo} & \textbf{Valore} \\ 
+        \midrule
+        Accelerazione gravitazionale standard & $g_0$ & \SI{9.80665}{m/s^2} \\
+        Costante specifica dell'aria secca & $R$ & \SI{287.05}{J/(kg \cdot K)} \\
+        Pressione atmosferica standard ($h=0$) & $P_0$ & \SI{101325}{Pa} \\
+        Temperatura standard ($h=0$) & $T_0$ & \SI{288.15}{K} \\
+        Gradiente termico verticale (Lapse Rate) & $L$ & \SI{0.0065}{K/m} \\
+        Altitudine della Tropopausa & $H_{trop}$ & \SI{11000}{m} \\
+        Temperatura della Stratosfera & $T_{strato}$ & \SI{216.65}{K} \\
+        Rapporto calori specifici (Indice adiabatico) & $\gamma$ & $1.4$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{Parametri costitutivi del modello ISA (International Standard Atmosphere).}
+\end{table}
+% ==============================================================================
+\section{Conclusioni: La Matematica dell'Inevitabile}
+% ==============================================================================
+
+Il modello presentato in questo documento non costituisce un mero esercizio di traduzione di formule in codice C, bensì rappresenta la creazione di un \textit{Digital Twin} di un sistema fisico complesso. Attraverso l'integrazione di termodinamica atmosferica, aerodinamica transonica e controllo a retroazione, abbiamo simulato la silenziosa e brutale battaglia tra l'energia e l'entropia che avviene nella stratosfera.
+
+\subsection{Dall'Astrazione alla Realtà Cinematica}
+L'implementazione dell'integratore \textbf{Runge-Kutta del 4° Ordine} ha permesso di trasformare il tempo continuo in una sequenza discreta di precisione chirurgica. Laddove un integratore semplice avrebbe fallito nelle curve ad alto carico, il modello RK4 ha agito come un microscopio temporale, sondando il futuro del missile quattro volte per ogni istante, garantendo che nessuna sfumatura della fisica — dalla densità dell'aria a $\SI{10000}{m}$ fino al picco di resistenza a Mach 1 — venisse ignorata.
+
+Abbiamo dimostrato che l'intercettazione non è garantita dalla semplice volontà del sistema di guida, ma è subordinata al rispetto dei limiti imposti dalla natura:
+\begin{itemize}
+    \item Il \textbf{Limite Strutturale} ci ricorda che la materia ha un punto di rottura.
+    \item Il \textbf{Limite Aerodinamico} ci insegna che non si può comandare il fluido se non si possiede l'energia per dominarlo.
+    \item La \textbf{Divergenza del Drag} punisce ogni tentativo di manovra con una perdita inesorabile di velocità.
+\end{itemize}
+
+\subsection{Sintesi Finale}
+Il codice sviluppato non è semplicemente una sequenza di istruzioni: è, in ultima analisi, \textbf{un motore di verità fisica}.  . In esso, il vettore $\vec{P}_M$ cessa di essere una fredda variabile allocata in memoria e diventa la \textbf{traccia matematica di un corpo reale}, che combatte contro la gravità, l’attrito e i limiti imposti dall’atmosfera per adempiere al proprio scopo. 
+
+La convergenza della distanza a zero ($R \to 0$) con $V_c > 0$ non è solo il risultato di un ciclo \texttt{while}, è la \textbf{prova formale dell’efficacia della Navigazione Proporzionale}, un algoritmo capace di trasformare la geometria pura delle linee di vista in un \textbf{destino cinetico inevitabile}. Qui, ogni derivata angolare diventa una decisione, ogni accelerazione laterale una sentenza irrevocabile.
+
+In conclusione, questa simulazione dimostra che nel dominio del \textbf{volo supersonico} non esiste margine per l’approssimazione ingenua. Solo attraverso il \textbf{rigore dell’analisi termodinamica}, la \textbf{fedeltà dei modelli fisici} e la \textbf{robustezza dell’integrazione numerica} è possibile anticipare l’esito di quell’istante finale —
+
+ quell’istante in cui \textbf{la matematica smette di essere astratta e diventa realtà}.
+
+ 
+
+\vspace{2cm}
+
+\begin{center}
+    \textit{``La fisica è l'unica legge che il missile non può infrangere.\\ Tutto il resto è solo una questione di tempo e di energia.''}
+\end{center}
+
+\end{document}
+\end{document}
