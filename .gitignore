@@ -26,3 +26,9 @@ output/
 *.xlsx
 *.bat
 tempCodeRunnerFile.py
+
+# File di design e demo del drone
+interfaccia_grafica_demo.py
+drone.svg
+DRONE.drawio.png
+Diagramma senza titolo.drawio

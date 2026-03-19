@@ -69,7 +69,7 @@ numero_massimo_passi = config.MAX_STEPS
 
 # Parametri aggiuntivi per il motore
 massa_a_vuoto = config.MASSA_TOTALE - config.MASSA_PROPELLENTE  # Massa secca
-massa_fuel_attuale = ctypes.c_double(config.MASSA_PROPELLENTE)   # Fuel rimasto (puntatore)
+massa_fuel_attuale = ctypes.c_double(config.MASSA_PROPELLENTE)   # Fuel rimasto 
 temp_skin_attuale = ctypes.c_double(288.15)  # Temperatura pelle missile (K) - parte da T_mare
 consumo_kg_s = config.MASSA_PROPELLENTE / config.TEMPO_COMBUSTIONE  # Rateo di consumo
 
@@ -84,7 +84,7 @@ if not os.path.exists(dir_path):
     try:
         os.makedirs(dir_path)
     except OSError:
-        pass # Se fallisce userà la cartella corrente o darà errore dopo
+        pass
 
 try:
     file_csv = open(percorso_file_csv, mode='w', newline='')
@@ -123,7 +123,6 @@ for passo in range(numero_massimo_passi):
     vel_tot = math.sqrt(velocita_missile[0]**2 + velocita_missile[1]**2 + velocita_missile[2]**2)
 
     # 2. Chiamata al C
-    # Ritorna la distanza attuale; i dati dettagliati vanno in dati_telemetria
     distanza_attuale = libreria_motore_fisico.aggiorna_missile(
         posizione_missile, 
         velocita_missile, 

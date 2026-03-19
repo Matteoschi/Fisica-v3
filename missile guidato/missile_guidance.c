@@ -38,8 +38,8 @@ double calcola_fisica_step(
     double drag_coeff,
     double acc_out[3],     
     int Endgame_Strategy,   
-    double temp_skin_attuale,  // (Input) Temperatura della struttura in questo istante
-    double *out_rate_temp,     // (Output) quanto velocemente cambia la temp
+    double temp_skin_attuale,  
+    double *out_rate_temp,     
     double dati_debug[14]    
 ) {
     int stato_sicurezza = STATUS_OK;
@@ -297,7 +297,7 @@ double calcola_fisica_step(
         double forza_Portanza_richiesta = massa_attuale * guide_force;// Newton: F_lift = m * acmd        
         Coefficiente_Portanza_richiesto = forza_Portanza_richiesta / (pressione_dinamica * AREA_MISSILE);// Equazione Portanza Inversa: CL = L / (q * S)
         
-        // LIMITAZIONE: Cl non può superare il massimo fisico (stallo)
+        // Cl non può superare il massimo fisico (stallo)
         if (Coefficiente_Portanza_richiesto > LIMITE_STALLO) {
             Coefficiente_Portanza_richiesto = LIMITE_STALLO;
         }
@@ -339,7 +339,7 @@ double calcola_fisica_step(
         dati_debug[10]= coefficiente_attrito_tot;          // Coefficiente Drag Totale
         dati_debug[11]= Coefficiente_Portanza_richiesto;         // Coefficiente Lift Attuale
         dati_debug[12] = stato_sicurezza;          // Stato di Sicurezza
-        dati_debug[13] = temp_skin_attuale;        // ✅ Temperatura Pelle Missile
+        dati_debug[13] = temp_skin_attuale;        // Temperatura Pelle Missile
     }
     
     return fattore_spinta;
@@ -353,10 +353,10 @@ double aggiorna_missile(
     double posM[3], double velM[3], 
     double posT[3], double velT[3], 
     double dt, 
-    double tempo_corrente,      // (Solo per debug/log)
-    double massa_totale_launch, // (Non usato, calcoliamo dinamico)
-    double massa_carburante,    // (Non usato, usiamo il puntatore)
-    double durata_motore,       // (Non usato, dipende dal fuel)
+    double tempo_corrente,       
+    double massa_totale_launch,  
+    double massa_carburante,    
+    double durata_motore,       
     double massa_a_vuoto,       // Peso del missile a secco (Costante)
     double *ptr_massa_fuel,     // PUNTATORE alla benzina rimasta (Input/Output)
     double consumo_kg_s,        // Rateo di consumo a piena potenza (kg/s)
@@ -381,7 +381,7 @@ double aggiorna_missile(
     }
 
     // --- 2. GESTIONE MASSA E SPINTA (Dal serbatoio) ---
-    double fuel_attuale = *ptr_massa_fuel; // Leggiamo valore attuale dal puntatore
+    double fuel_attuale = *ptr_massa_fuel; 
     double spinta_disponibile = spinta_nominale;
 
     // Se il serbatoio è vuoto o negativo , spegniamo il motore
@@ -410,7 +410,6 @@ double aggiorna_missile(
     // --- STEP K1 (Stato Iniziale) ---
     for(int i=0; i<3; i++) k1_vel[i] = velM[i];
     
-    // NOTA IMPORTANTE: Qui catturiamo il 'throttle_factor' (0.0 - 1.0) 
     // restituito da calcola_fisica_step (che contiene la logica termica)
     double throttle_usato = calcola_fisica_step(posM, velM, massa_totale_fisica, posT, velT, spinta_disponibile, drag_coeff, k1_acc, modalita_terminale, T_skin_locale, &rate_temp_k1, dati_output);
 
@@ -448,71 +447,57 @@ double aggiorna_missile(
     calcola_fisica_step(pos_temp, vel_temp, massa_temp, posT, velT, spinta_disponibile, drag_coeff, k4_acc, modalita_terminale, T_skin_temp, &rate_temp_k4, NULL);
 
 
-// --- GESTIONE MANOVRA TARGET (Zoom Climb 62k ft/min) ---
 // --- PARAMETRI MANOVRA F-22 RAPTOR ---
-    double soglia_x_manovra = 1000.0;    // Trigger evasione (m)
+    double soglia_x_manovra = 1000.0;    
     
     // Performance F-22
-    double max_g_load = 9.0 * 9.81;      // 9G Operativi (standard evasione)
-    double target_vz_limit = 350.0;      // Salita rapida (superiore ai caccia standard)
-    double target_vy_limit = 210.0;      // Velocità laterale (virata)
+    double target_vz_limit = 290.0;     
+    double target_vy_limit = 390.0;      
     
-    // Ripartizione vettoriale dei G (Virata + Cabrata)
-    // L'F-22 usa il vettore di spinta per tirare G sia in verticale che laterale.
-    // Ipotizziamo una ripartizione: 7G per salire, 5.5G per virare (Totale vettoriale ~9G)
-    double acc_z_climb = 8.0 * 9.81;     
-    double acc_y_turn  = 7.5 * 9.81;     
+    // Ripartizione vettoriale dei G 
+    double acc_z_climb = 11 * 9.81;   //5.5  
+    double acc_y_turn  = 12 * 9.81;   //8.5
 
     // LOGICA EVASIONE "BREAK TURN & CLIMB"
     if (posT[0] > soglia_x_manovra) {
         
-        // 1. CABRATA (Asse Z) - Pull Up
         if (velT[2] < target_vz_limit) {
             velT[2] += acc_z_climb * dt;
             // Clamp Z
             if (velT[2] > target_vz_limit) velT[2] = target_vz_limit;
         }
 
-        // 2. VIRATA DIFENSIVA (Asse Y) - Break Turn
-        // Questo costringe il missile a calcolare l'anticipo su due piani (Orizz. e Vert.)
         if (velT[1] < target_vy_limit) {
             velT[1] += acc_y_turn * dt;
             // Clamp Y
             if (velT[1] > target_vy_limit) velT[1] = target_vy_limit;
         }
 
-        // 3. CONSERVAZIONE ENERGIA (F-22 Thrust-to-Weight > 1)
-        // Normalmente una virata fa perdere velocità frontale (X). 
-        // L'F-22 ha motori mostruosi, quindi perde pochissimo, ma per realismo
-        // riduciamo leggermente la V_x mentre manovra (Bleeding energy).
-        if (velT[0] > 250.0) { // Non scende sotto i 250 m/s
-             velT[0] -= 2.0 * dt; // Decelerazione leggera dovuta al drag indotto
+
+        if (velT[0] > 250.0) { 
+             velT[0] -= 4.0 * dt; 
         }
     }
 
-    // --- SOMMA FINALE RK4 (Aggiornamento Cinematico) ---
+    // --- SOMMA FINALE RK4  ---
     double T_skin_finale = T_skin_locale + (dt / 6.0) * (rate_temp_k1 + 2.0*rate_temp_k2 + 2.0*rate_temp_k3 + rate_temp_k4);
     *ptr_temp_skin = T_skin_finale; // Scriviamo la temperatura aggiornata
     for(int i=0; i<3; i++) 
     {
-        // Aggiorna posizione Missile (RK4)
+
         posM[i] += (dt / 6.0) * (k1_vel[i] + 2.0*k2_vel[i] + 2.0*k3_vel[i] + k4_vel[i]);
         
-        // Aggiorna velocità Missile (RK4)
         velM[i] += (dt / 6.0) * (k1_acc[i] + 2.0*k2_acc[i] + 2.0*k3_acc[i] + k4_acc[i]);
         
-        // Aggiorna Posizione Target (Eulero)
-        // Usa la velocità velT aggiornata dalla logica di manovra qui sopra
         posT[i] += velT[i] * dt;
     }
 
-    // --- 3. AGGIORNAMENTO CARBURANTE ---
     // Se c'è carburante, lo consumiamo in base a quanto abbiamo spinto (throttle_usato)
     if (fuel_attuale > 0.0) {
         // Consumo = Rateo_Max * Throttle * Tempo
         double fuel_bruciato = consumo_kg_s * throttle_usato * dt;
         
-        *ptr_massa_fuel -= fuel_bruciato; // Scriviamo nella variabile puntata
+        *ptr_massa_fuel -= fuel_bruciato; 
         
         if (*ptr_massa_fuel < 0.0) *ptr_massa_fuel = 0.0;
     }
