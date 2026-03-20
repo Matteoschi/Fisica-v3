@@ -3,17 +3,17 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 #include <utility/imumaths.h>
-#include <Adafruit_BMP280.h>
 #include <Servo.h>
 #include "SBUS.h"
 #include <Adafruit_INA219.h>
+#include <Adafruit_BMP3XX.h>
 
 // ============================================================
 //  SENSORI
 // ============================================================
 TinyGPSPlus      gps;
 Adafruit_BNO055  giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
-Adafruit_BMP280  barometro;
+Adafruit_BMP3XX barometro;
 
 const int PIN_T_motore=A1;
 const int PIN_T_teensy=A2;
@@ -140,9 +140,6 @@ const int PIN_LED_ROSSO_ALARM = 2; // Allarmi / Batteria
 const int PIN_LED_VERDE_GPS = 3; // GPS Fix
 const int PIN_LED_BLU_PID   = 4; // Modalità AUTO (PID)
 
-unsigned long timerLampeggio = 0;
-bool statoLedRosso = false;
-
 // ============================================================
 //  FLAGS STATO SISTEMA
 // ============================================================
@@ -226,16 +223,14 @@ void setup()
 
         // 2. controllo barometro
         if (!baroPronto) {
-            Serial.print("Barometro (BMP280).. ");
-            if (barometro.begin(0x76) || barometro.begin(0x77)) {
-                barometro.setSampling(
-                    Adafruit_BMP280::MODE_NORMAL,
-                    Adafruit_BMP280::SAMPLING_X2,
-                    Adafruit_BMP280::SAMPLING_X16,
-                    Adafruit_BMP280::FILTER_X16,
-                    Adafruit_BMP280::STANDBY_MS_500
-                );
-                delay(100);
+            Serial.print("Barometro (BMP390).. ");
+            if (barometro.begin_I2C()) {
+                barometro.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+                barometro.setPressureOversampling(BMP3_OVERSAMPLING_32X);
+                barometro.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+                barometro.setOutputDataRate(BMP3_ODR_50_HZ); 
+                delay(100); // stabilizzare il sensore
+                //tara 
                 global_altitudineDiPartenza = barometro.readAltitude(1013.25);
                 baroPronto = true;
                 Serial.print("OK! (Tara: ");
@@ -245,7 +240,7 @@ void setup()
                 Serial.println("FALLITO! (Controllo cavi I2C)");
             }
         } else {
-            Serial.println("Barometro (BMP280).. [GIA' OK]");
+            Serial.println("Barometro (BMP390).. [GIA' OK]");
         }
 
         // 3. calibrazione pitot
@@ -833,7 +828,7 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     // ----------------------------------------------------------
     // 4. PID ROLL
     // ----------------------------------------------------------
-    float erroreRoll = targetRoll - rollReale;  // FIX #2: usa targetRoll
+    float erroreRoll = targetRoll - rollReale;  
 
     float P_Roll = kp_dinamico_roll * erroreRoll;
 
