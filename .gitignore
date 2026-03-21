@@ -18,7 +18,7 @@ analisi maxdati.py
 .vscode/
 .idea/
 .DS_Store
-
+*.tex
 # Output simulazioni
 output/
 *.csv
