@@ -79,6 +79,7 @@ const int PIN_LED_VERDE_DISARMATO = 3;
 
 bool imuPronto = false;
 bool baroPronto = false;
+bool sensori_calibrati = false; 
 int  tentativi = 0;
 const int MAX_TENTATIVI = 3;
 
@@ -148,35 +149,6 @@ void setup() {
       }
   }
 
-  // ── Calibrazione ──
-  Serial.println("\nSensori OK. Calibrazione in corso... NON MUOVERE IL RAZZO!");
-  delay(2000);
-
-  // Altitudine di partenza: media di 20 campioni per massima stabilità
-  float sommaAlt   = 0.0;
-  int   campioniOK = 0;
-  for (int i = 0; i < 20; i++) {
-      if (barometro.performReading()) {
-          sommaAlt += barometro.readAltitude(1013.25);
-          campioniOK++;
-      }
-      delay(50);
-  }
-
-  global_altitudineDiPartenza = (campioniOK > 0) ? (sommaAlt / campioniOK) : 0.0;
-  stima_altitudine = 0.0; // Kalman parte da 0 (relativo al suolo)
-  stima_velocita   = 0.0;
-  Serial.print("Altitudine base: ");
-  Serial.print(global_altitudineDiPartenza);
-  Serial.println(" m (QNH 1013.25 hPa)");
-
-  // Assetto di partenza (punto zero del PID)
-  sensors_event_t event;
-  giroscopio.getEvent(&event);
-  posizione_partenza_roll  = event.orientation.z;
-  posizione_partenza_pitch = event.orientation.y;
-  posizione_partenza_yaw   = event.orientation.x;
-  Serial.println("Calibrazione assetto completata.");
 
   // ── Inizializzazione servi ──
   Serial.println("Inizializzazione Servomotori...");
@@ -202,16 +174,19 @@ void setup() {
   digitalWrite(PIN_LED_VERDE_DISARMATO, LOW);
 
   tempoPassato_loop = millis();
-  Serial.println("=== SISTEMA DI VOLO ARMATO E PRONTO ===");
+  Serial.println("=== HARDWARE OK. IN ATTESA DI COMANDO DI CALIBRAZIONE ('K') ===");
   delay(1000);
 }
 
 void loop() {
+    if (!sensori_calibrati) {
+        leggiComandiDaTerra();
+        return; 
+    }
     unsigned long tempoAttuale = millis();
     if (tempoAttuale - tempoPassato_loop < 20) {
         return; 
     }
-
     dt_loop = (tempoAttuale - tempoPassato_loop) / 1000.0;
 
     if (dt_loop > 0.5) {
@@ -253,7 +228,12 @@ void loop() {
 
 
   if (!razzo_armato_per_volo) {
-      return; 
+    digitalWrite(PIN_LED_VERDE_DISARMATO, HIGH);
+    digitalWrite(PIN_LED_ARMATO, LOW);
+    return; 
+  }else{
+    digitalWrite(PIN_LED_VERDE_DISARMATO, LOW);
+    digitalWrite(PIN_LED_ARMATO, HIGH);
   }
 
   // ── 5. TRACCIAMENTO ALTITUDINE MASSIMA ──
@@ -413,17 +393,34 @@ void inviaTelemetria(float pitch, float roll, float yaw, float pid_pitch, float 
 bool razzo_armato_per_volo = false;
 
 void leggiComandiDaTerra() {
-    // Se arriva un comando dal cavo Seriale 
     if (Serial.available() > 0) {
         char comando = Serial.read(); // Leggi la lettera digitata
+        if (!sensori_calibrati)
+        {
+            Serial.println("Sensori non ancora calibrati , loop inaccessibile");
+        }
+        
 
         switch (comando) {
-            case 'A': // Digita 'A' per ARMARE
-                razzo_armato_per_volo = true;
-                Serial.println("\n[GCS] ATTENZIONE: SISTEMA ARMATO! PRONTO AL LANCIO!");
+            case 'K': 
+            case 'k':
+                if (razzo_armato_per_volo) {
+                    Serial.println("\n[GCS] ERRORE: Disarma il razzo prima di calibrare!");
+                } else {
+                    eseguiCalibrazionePad();
+                }
                 break;
 
-            case 'S': // Digita 'S' (Safe) per DISARMARE
+            case 'A': 
+                if (!sensori_calibrati) {
+                    Serial.println("\n[GCS] ERRORE FATALE: Sensori non calibrati. Esegui comando 'K' prima di armare.");
+                } else {
+                    razzo_armato_per_volo = true;
+                    Serial.println("\n[GCS] ATTENZIONE: SISTEMA ARMATO! PRONTO AL LANCIO!");
+                }
+                break;
+
+            case 'S': 
                 razzo_armato_per_volo = false;
                 Serial.println("\n[GCS] Sistema DISARMATO (Safe). Lancio bloccato.");
                 break;
@@ -522,4 +519,60 @@ void leggiComandiDaTerra() {
                 break;
         }
     }
+}
+
+void eseguiCalibrazionePad() {
+    Serial.println("\n[GCS] Inizio Calibrazione... NON TOCCARE IL RAZZO!");
+
+    // 1. Fase di stabilizzazione sensori (2 secondi)
+    for (int j = 0; j < 10; j++) {
+        digitalWrite(PIN_LED_VERDE_DISARMATO, HIGH);
+        delay(100);
+        digitalWrite(PIN_LED_VERDE_DISARMATO, LOW);
+        delay(100);
+    }
+
+    // Altitudine di partenza: media di 20 campioni
+    float sommaAlt   = 0.0;
+    int   campioniOK = 0;
+    
+    // 2. Fase di campionamento altimetro
+    Serila.print("\n Calibrazione altimetro");
+    for (int i = 0; i < 20; i++) {
+        if (i % 2 == 0) {
+            digitalWrite(PIN_LED_VERDE_DISARMATO, HIGH);
+        } else {
+            digitalWrite(PIN_LED_VERDE_DISARMATO, LOW);
+        }
+
+        if (barometro.performReading()) {
+            sommaAlt += barometro.readAltitude(1013.25);
+            campioniOK++;
+        }
+        delay(50); 
+    }
+    
+    global_altitudineDiPartenza = (campioniOK > 0) ? (sommaAlt / campioniOK) : 0.0;
+    stima_altitudine = 0.0; 
+    stima_velocita   = 0.0;
+
+    Serial.print("\n [GCS] Altitudine base acquisita: ");
+    Serial.print(global_altitudineDiPartenza);
+    Serial.println(" m");
+
+    Serial.print("\n Calibazione assetto di partenza");
+    sensors_event_t event;
+    giroscopio.getEvent(&event);
+    posizione_partenza_roll  = event.orientation.z;
+    posizione_partenza_pitch = event.orientation.y;
+    posizione_partenza_yaw   = event.orientation.x;
+
+    digitalWrite(PIN_LED_VERDE_DISARMATO, HIGH);
+    digitalWrite(PIN_LED_ARMATO, HIGH);
+    Serial.println("[GCS] Assetto Zero acquisito.");
+    sensori_calibrati = true; 
+    Serial.println("[GCS] CALIBRAZIONE COMPLETATA. Pronto per l'Armamento.");
+    digitalWrite(PIN_LED_VERDE_DISARMATO, LOW);
+    digitalWrite(PIN_LED_ARMATO, LOW);
+    tempoPassato_loop = millis();
 }
