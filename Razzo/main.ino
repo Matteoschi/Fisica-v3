@@ -1,16 +1,16 @@
+#include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 #include <utility/imumaths.h>
 #include <Servo.h>
 #include <Adafruit_BMP3XX.h>
-
 //  SENSORI
 Adafruit_BNO055 giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
 Adafruit_BMP3XX barometro;
 
 //  TELEMETRIA LORA
-#define TELEMETRIA Serial4
+#define TELEMETRIA Serial 
 unsigned long timerTelemetria = 0;
 const unsigned long INTERVALLO_TELEMETRIA_MS = 200; 
 
@@ -77,6 +77,8 @@ const float K_vel = 0.05;
 const int PIN_LED_ARMATO= 2;
 const int PIN_LED_VERDE_DISARMATO = 3;
 
+bool razzo_armato_per_volo = false;
+
 bool imuPronto = false;
 bool baroPronto = false;
 bool sensori_calibrati = false; 
@@ -94,6 +96,8 @@ void  aggiornaKalman(float baro_alt_misurata, float accel_verticale, float dt);
 void  calcolaPid(float angoloRoll, float angoloPitch, float angoloYaw, float dt);
 void  mixer_servi(float out_Pitch, float out_Roll, float out_Yaw);
 void  inviaTelemetria(float pitch, float roll, float yaw,float pid_pitch, float pid_roll, float pid_yaw,bool paracadute);
+void leggiComandiDaTerra();
+void eseguiCalibrazionePad();
 
 // ============================================================
 //  SETUP
@@ -390,8 +394,6 @@ void inviaTelemetria(float pitch, float roll, float yaw, float pid_pitch, float 
   TELEMETRIA.println(paracadute ? 1 : 0); 
 }
 
-bool razzo_armato_per_volo = false;
-
 void leggiComandiDaTerra() {
     if (Serial.available() > 0) {
         char comando = Serial.read(); // Leggi la lettera digitata
@@ -537,7 +539,7 @@ void eseguiCalibrazionePad() {
     int   campioniOK = 0;
     
     // 2. Fase di campionamento altimetro
-    Serila.print("\n Calibrazione altimetro");
+    Serial.print("\n Calibrazione altimetro");
     for (int i = 0; i < 20; i++) {
         if (i % 2 == 0) {
             digitalWrite(PIN_LED_VERDE_DISARMATO, HIGH);

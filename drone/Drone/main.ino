@@ -11,7 +11,7 @@
 // ============================================================
 //  SENSORI
 // ============================================================
-TinyGPSPlus      gps;
+TinyGPSPlus gps;
 Adafruit_BNO055  giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
 Adafruit_BMP3XX barometro;
 
@@ -171,11 +171,15 @@ bool statoPrecedenteEsterni = true;
 void applicaMixer4Servi(int pitch, int roll);
 void aggiornaNavigazione(float angoloYaw);
 void diagnosticaServi();
+void inviaTelemetria(float pitch, float roll, float yaw,  
+                     float velPitotKmh, float velGpsKmh, float velStimataKmh,
+                     int outPitch, int outRoll, int outGas);
 void calcolaPID(float targetAltitudine, float targetRoll,
                 float pitchReale, float rollReale,
                 float velocitaAttuale, float targetVelocita,
                 int gasDiBase,
                 int &comandoPitchOut, int &comandoRollOut, int &comandoGasOut);
+void gestisciLuci();
 
 // ============================================================
 //  SETUP
@@ -466,7 +470,12 @@ void loop()
     }
 
     // Invia il pacchetto scatola nera via LoRa (Convertendo le velocità in km/h)
-    void inviaTelemetria(float pitch, float roll, float yaw,float velPitotKmh, float velGpsKmh, float velStimataKmh,int outPitch, int outRoll, int outGas);
+    inviaTelemetria(
+    angoloPitch, angoloRoll, angoloYaw,
+    Velocita_pitot_Ms * 3.6f,
+    velocita_gps_Ms   * 3.6f,
+    Velocita_stimata_Ms * 3.6f,
+    correzionePitch, correzioneRoll, comandoGasFinale);
     delay(50);
 }
 
