@@ -18,12 +18,12 @@ Adafruit_BMP3XX barometro;
 const int PIN_T_motore=A1;
 const int PIN_T_teensy=A2;
 float Global_Temperatura_motore = 0.0;
-float Global_Temperatura_teensy = 0.0;
+float temp_aria_barometro = 0.0; // la temp della teensy puo essere letta anceh con la temp del barometro poichè sono nello tesso luogo
 
 // ============================================================
 //  CONFIGURAZIONE GPS
 // ============================================================
-#define GPS_SERIAL    Serial1
+#define GPS_SERIAL  Serial1
 #define BAUD_RATE_GPS 9600
 // ============================================================
 //  TELEMETRIA LORA 
@@ -42,7 +42,8 @@ bool pacchettoPerso = false;
 // ============================================================
 const int   PIN_ARIA    = A0;
 const float DENSITA_ARIA = 1.225;  // kg/m³
-float       VALORE_ZERO  = 0.0;    // calibrazione pitot
+float VALORE_ZERO  = 0.0;    
+const float FATTORE_CONVERSIONE_PA = 3.22;
 // ============================================================
 //  SERVO
 // ============================================================
@@ -60,7 +61,7 @@ Servo motore;
 // ============================================================
 //  SENSORE CORRENTE
 // ============================================================
-Adafruit_INA219 sensoreBatt(0x40);  // Batteria principale
+Adafruit_INA219 sensoreBatt(0x40);  
 Adafruit_INA219 sensoreIntSX(0x41);
 Adafruit_INA219 sensoreIntDX(0x42);
 Adafruit_INA219 sensoreEstSX(0x43);
@@ -82,20 +83,20 @@ const float DISTANZA_FRENATA       = 150.0;  // m — distanza per iniziare a ra
 // ============================================================
 //  NAVIGAZIONE
 // ============================================================
-const double TARGET_LAT        = 41.902782;
-const double TARGET_LON        = 12.496366;
+const double TARGET_LAT = 41.902782;
+const double TARGET_LON = 12.496366;
 const float  ALTITUDINE_TARGET = 40.0;
 
 float global_altitudineDiPartenza = 0.0;
-float global_targetRoll           = 0.0;
-float global_distanzaDalTarget    = 0.0;
-float global_rottaVersoTarget     = 0.0;
-float global_errore_rotta         = 0.0;
-float global_altitudineDalSuolo   = 0.0;
+float global_targetRoll  = 0.0;
+float global_distanzaDalTarget = 0.0;
+float global_rottaVersoTarget = 0.0;
+float global_errore_rotta   = 0.0;
+float global_altitudineDalSuolo = 0.0;
 float latPrecedente = 0.0;
-float lonPrecedente = 0.0;
-float velocitaGPS   = 0.0;
-float alpha_vel     = 0.7; // 70% fiducia nel Pitot, 30% nel GPS
+float lonPrecedente= 0.0;
+float velocitaGPS = 0.0;
+float alpha_vel= 0.7; 
 float Velocita_stimata_Ms = 0.0;
 // ============================================================
 //  PID — GUADAGNI
@@ -121,45 +122,43 @@ unsigned long tempoPassatoPID = 0;
 // ============================================================
 //  VARIABILI DI STATO PID GLOBALI
 // ============================================================
-float pid_sommaErroriAlt     = 0.0;
-float pid_errorePassatoAlt   = 0.0;
+float pid_sommaErroriAlt   = 0.0;
+float pid_errorePassatoAlt = 0.0;
 
-float pid_sommaErroriPitch   = 0.0;
+float pid_sommaErroriPitch = 0.0;
 float pid_errorePassatoPitch = 0.0;
 
-float pid_sommaErroriRoll    = 0.0;
-float pid_errorePassatoRoll  = 0.0;
+float pid_sommaErroriRoll  = 0.0;
+float pid_errorePassatoRoll = 0.0;
 
-float pid_sommaErroriVel     = 0.0;
-float pid_errorePassatoVel   = 0.0;
+float pid_sommaErroriVel   = 0.0;
+float pid_errorePassatoVel = 0.0;
 
 // ============================================================
 //  LED DI STATO E ALLARMI
 // ============================================================
-const int PIN_LED_ROSSO_ALARM = 2; // Allarmi / Batteria
-const int PIN_LED_VERDE_GPS = 3; // GPS Fix
-const int PIN_LED_BLU_PID   = 4; // Modalità AUTO (PID)
+const int PIN_LED_ROSSO_ALARM = 2; // Allarmi come moduli mancanti / Batteria
+const int PIN_LED_VERDE_GPS = 3; // GPS Fix e settaggio pitot
+const int PIN_LED_BLU_PID  = 4; // Modalità AUTO pid e settaggio barometro
 
 // ============================================================
 //  FLAGS STATO SISTEMA
 // ============================================================
-bool imuPronto      = false;
-bool baroPronto     = false;
+bool imuPronto = false;
+bool baroPronto= false;
 bool pitotCalibrato = false;
-bool Voltaggio      = true;
-int  tentativi      = 0;
+bool Voltaggio = true;
+int  tentativi = 0;
 const int MAX_TENTATIVI = 3;
 
 // batteria
-bool  batteriaBassa          = false;
-bool  batteriaBassaPrecedente = false;
-float global_fattoreReattivita = 1.0;
+bool  batteriaBassa= false;
 
 // Stati di salute dei servi
-bool estSX_Ok        = true;
-bool estDX_Ok        = true;
-bool intSX_Ok        = true;
-bool intDX_Ok        = true;
+bool estSX_Ok = true;
+bool estDX_Ok = true;
+bool intSX_Ok = true;
+bool intDX_Ok = true;
 bool interni_staccati = false;
 int  global_modalitaVolo = 1;
 bool statoPrecedenteInterni = true;
@@ -171,14 +170,8 @@ bool statoPrecedenteEsterni = true;
 void applicaMixer4Servi(int pitch, int roll);
 void aggiornaNavigazione(float angoloYaw);
 void diagnosticaServi();
-void inviaTelemetria(float pitch, float roll, float yaw,  
-                     float velPitotKmh, float velGpsKmh, float velStimataKmh,
-                     int outPitch, int outRoll, int outGas);
-void calcolaPID(float targetAltitudine, float targetRoll,
-                float pitchReale, float rollReale,
-                float velocitaAttuale, float targetVelocita,
-                int gasDiBase,
-                int &comandoPitchOut, int &comandoRollOut, int &comandoGasOut);
+void inviaTelemetria(float pitch, float roll, float yaw,  float velPitotKmh, float velGpsKmh, float velStimataKmh,int outPitch, int outRoll, int outGas);
+void calcolaPID(float targetAltitudine, float targetRoll,float pitchReale, float rollReale,float velocitaAttuale, float targetVelocita,int gasDiBase,int &comandoPitchOut, int &comandoRollOut, int &comandoGasOut);
 void gestisciLuci();
 
 // ============================================================
@@ -189,6 +182,15 @@ void setup()
     Serial.begin(115200);
     Wire.begin();
     Wire.setClock(400000);
+
+    pinMode(PIN_LED_ROSSO_ALARM, OUTPUT);
+    pinMode(PIN_LED_VERDE_GPS, OUTPUT);
+    pinMode(PIN_LED_BLU_PID, OUTPUT);
+    
+    // Spengo tutto all'avvio per sicurezza
+    digitalWrite(PIN_LED_ROSSO_ALARM, LOW);
+    digitalWrite(PIN_LED_VERDE_GPS, LOW);
+    digitalWrite(PIN_LED_BLU_PID, LOW);
 
     Serial.println("In attesa di segnale dal Radiocomando FrSky...");
     ricevente.begin();
@@ -203,15 +205,12 @@ void setup()
     GPS_SERIAL.begin(BAUD_RATE_GPS);
     Serial.println("GPS: Seriale aperta, in attesa di satelliti...");
 
-
-
     while ((!imuPronto || !baroPronto || !pitotCalibrato || !Voltaggio) && tentativi < MAX_TENTATIVI) {
         Serial.println("\n--- Controllo Sensori in corso... ---");
         Serial.print("\nTentativo numero: ");
         Serial.println(tentativi + 1);
         tentativi++;
 
-        // 1. controllo giroscopio (IMU)
         if (!imuPronto) {
             Serial.print("IMU (BNO055)....... ");
             if (giroscopio.begin()) {
@@ -226,6 +225,8 @@ void setup()
         }
 
         // 2. controllo barometro
+        float sommaAlt   = 0.0;
+        int campioniOK = 0;
         if (!baroPronto) {
             Serial.print("Barometro (BMP390).. ");
             if (barometro.begin_I2C()) {
@@ -233,10 +234,19 @@ void setup()
                 barometro.setPressureOversampling(BMP3_OVERSAMPLING_32X);
                 barometro.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
                 barometro.setOutputDataRate(BMP3_ODR_50_HZ); 
-                delay(100); // stabilizzare il sensore
-                //tara 
-                global_altitudineDiPartenza = barometro.readAltitude(1013.25);
+                delay(100);                
+                for(int i = 0; i < 20; i++){
+                    digitalWrite(PIN_LED_BLU_PID, !digitalRead(PIN_LED_BLU_PID));
+                    
+                    sommaAlt += barometro.readAltitude(1013.25); 
+                    campioniOK++;
+                    
+                    delay(50);
+                }
+                digitalWrite(PIN_LED_BLU_PID, LOW); 
+                
                 baroPronto = true;
+                global_altitudineDiPartenza = (campioniOK > 0) ? (sommaAlt / campioniOK) : 0.0;
                 Serial.print("OK! (Tara: ");
                 Serial.print(global_altitudineDiPartenza);
                 Serial.println("m)");
@@ -252,9 +262,15 @@ void setup()
             Serial.print("Pitot (Velocita')... ");
             long sommaLetture = 0;
             for (int i = 0; i < 100; i++) {
+                if (i % 10 == 0) {
+                    digitalWrite(PIN_LED_VERDE_GPS, !digitalRead(PIN_LED_VERDE_GPS));
+                }
+                
                 sommaLetture += analogRead(PIN_ARIA);
                 delay(5);
             }
+            digitalWrite(PIN_LED_VERDE_GPS, LOW); 
+            
             VALORE_ZERO = sommaLetture / 100.0;
 
             if (VALORE_ZERO > 5 && VALORE_ZERO < 1020) {
@@ -294,13 +310,16 @@ void setup()
 
         if (!imuPronto || !baroPronto || !pitotCalibrato || !Voltaggio) {
             Serial.println("ATTENZIONE: Sensori mancanti o errati. Ritento tra 2 secondi...");
+            digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
             delay(2000);
+            digitalWrite(PIN_LED_ROSSO_ALARM, LOW);
         }
     }
 
     if (!imuPronto || !baroPronto || !pitotCalibrato) {
         Serial.println("\nERRORE CRITICO");
         Serial.println("AVVIO BLOCCATO. Controllare l'hardware.");
+        digitalWrite(PIN_LED_ROSSO_ALARM, HIGH); 
         while (1);
     }
 
@@ -321,11 +340,7 @@ void setup()
     servoEsternoDX.write(CENTRO);
     motore.write(GAS_MINIMO);
 
-    Serial.println("Inizializzazione LED di stato...");
-    pinMode(PIN_LED_ROSSO_ALARM, OUTPUT);
-    pinMode(PIN_LED_VERDE_GPS, OUTPUT);
-    pinMode(PIN_LED_BLU_PID, OUTPUT);
-    
+    // Tutti i LED si accendono per 1 secondo
     digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
     digitalWrite(PIN_LED_VERDE_GPS, HIGH);
     digitalWrite(PIN_LED_BLU_PID, HIGH);
@@ -353,11 +368,9 @@ void loop()
     // monitoraggio voltaggio
     float vBatt = sensoreBatt.getBusVoltage_V();
     if (vBatt < 11.1) {
-        global_fattoreReattivita = 0.6;
         batteriaBassa = true;
-        Serial.println("BATTERIA BASSA: Risparmio energetico attivo.");
+        Serial.println("BATTERIA BASSA");
     } else {
-        global_fattoreReattivita = 1.0;
         batteriaBassa = false;
     }
 
@@ -377,24 +390,24 @@ void loop()
     // 4. lettura barometro
     float altitudineAttuale  = barometro.readAltitude(1013.25);
     global_altitudineDalSuolo = altitudineAttuale - global_altitudineDiPartenza;
-
-    // controlloo temperatura
+    // controllo temperature
+    temp_aria_barometro = barometro.temperature;
     float voltaggio_Sensore_motore = analogRead(PIN_T_motore) * (3.3 / 1023.0);
     Global_Temperatura_motore = (voltaggio_Sensore_motore - 0.5) * 100.0;
-    float voltaggio_Sensore_teensy = analogRead(PIN_T_teensy) * (3.3 / 1023.0);
-    Global_Temperatura_teensy = (voltaggio_Sensore_teensy - 0.5) * 100.0;
-
     // 5. pitot – lettura velocità aria
     float Velocita_pitot_Ms=0.0;
     int lettura_dal_pin_pitot= analogRead(PIN_ARIA);
-    float differenza= lettura_dal_pin_pitot - VALORE_ZERO;
+    lettura_dal_pin_pitot = constrain(lettura_dal_pin_pitot, 0, 1023);
+    float differenza= (float)lettura_dal_pin_pitot - VALORE_ZERO;
     if (differenza < 0) {
         differenza = 0;
     }
-    float pressionePascal = differenza * 1.5;
-    Velocita_pitot_Ms= sqrt((2.0 * pressionePascal) / DENSITA_ARIA);
+    float pressionePascal = differenza * FATTORE_CONVERSIONE_PA;
+    if (pressionePascal >0){
+        Velocita_pitot_Ms= sqrt((2.0 * pressionePascal) / DENSITA_ARIA);
+    }
 
-    //6. gps calcolo velocità (groundspeed)
+    /. gps calcolo velocità (groundspeed)
     float velocita_gps_Ms = 0.0;
     if (gps.speed.isValid()) {
         velocita_gps_Ms = gps.speed.kmph() / 3.6;
@@ -437,6 +450,21 @@ void loop()
         statoAttuale = global_modalitaVolo;
     }
 
+    // ── RESET PID AL CAMBIO DI MODALITÀ ──────────────────────
+    static int modalitaPrecedente = 1;
+    if (statoAttuale != modalitaPrecedente) {
+        pid_sommaErroriAlt    = 0.0;  pid_errorePassatoAlt    = 0.0;
+        pid_sommaErroriPitch  = 0.0;  pid_errorePassatoPitch  = 0.0;
+        pid_sommaErroriRoll   = 0.0;  pid_errorePassatoRoll   = 0.0;
+        pid_sommaErroriVel    = 0.0;  pid_errorePassatoVel    = 0.0;
+        tempoPassatoPID       = millis();
+        Serial.print(">> Reset PID: modalita' ");
+        Serial.print(modalitaPrecedente);
+        Serial.print(" -> ");
+        Serial.println(statoAttuale);           // stampa la transizione esatta
+        modalitaPrecedente = statoAttuale;      // aggiorna con statoAttuale
+    }
+
     if (global_modalitaVolo == 1 && !failsafe) {
         // Gas: da 172-1811 a GAS_MINIMO-GAS_MASSIMO (limiti meccanici motore)
         comandoGasFinale = constrain(map(canaliRC[2], 172, 1811, GAS_MINIMO, GAS_MASSIMO), GAS_MINIMO, GAS_MASSIMO);
@@ -468,7 +496,6 @@ void loop()
     if (millis() > 10000 && gps.charsProcessed() < 10) {
         Serial.println("ATTENZIONE: Nessun dato dal GPS. Controlla i cavi TX e RX!");
     }
-
     // Invia il pacchetto scatola nera via LoRa (Convertendo le velocità in km/h)
     inviaTelemetria(
     angoloPitch, angoloRoll, angoloYaw,
@@ -489,7 +516,7 @@ void applicaMixer4Servi(int pitch, int roll)
     int posEstSX = CENTRO;
     int posEstDX = CENTRO;
 
-    bool esterniAttivi = estSX_Ok && estDX_Ok && !batteriaBassa;
+    bool esterniAttivi = estSX_Ok && estDX_Ok;
     bool interniAttivi = intSX_Ok && intDX_Ok;
 
     if (esterniAttivi && interniAttivi) {
@@ -499,7 +526,7 @@ void applicaMixer4Servi(int pitch, int roll)
         posEstSX = CENTRO + pitch + roll;
         posEstDX = CENTRO + pitch - roll;
     } else if (!esterniAttivi) {
-        // Caso A: esterni rotti o batteria bassa → interni fanno tutto
+        // Caso A: esterni rotti  → interni fanno tutto
         posIntSX = CENTRO + pitch + roll;
         posIntDX = CENTRO + pitch - roll;
     } else {
@@ -561,14 +588,15 @@ void aggiornaNavigazione(float angoloYaw)
         global_errore_rotta = global_rottaVersoTarget - angoloYaw;
 
         // Via più breve per girare (normalizzazione ±180°)
-        if      (global_errore_rotta >  180.0) {
+        if(global_errore_rotta >  180.0) {
             global_errore_rotta -= 360.0;
         }else if (global_errore_rotta < -180.0) {
             global_errore_rotta += 360.0;
         }
 
-        // L1 Calcola l'accelerazione laterale necessaria per curvare dolcemente verso la rotta: a_lat = 2*V^2/l1 *sin(eta)
-        float L1 = max(Velocita_stimata_Ms * 4.0f, 1.0f); // minimo 1 metro per evitare divisione per zero mettere tutti float
+        // L1 Calcola l'accelerazione laterale necessaria per curvare  verso la rotta: a_lat = 2*V^2/l1 *sin(eta)
+        Velocita_stimata_Ms = max(Velocita_stimata_Ms, 1.0f); // Mai sotto 1 m/s nei calcoli
+        float L1 = max(Velocita_stimata_Ms * 4.0f, 1.0f); 
         float eta = radians(global_errore_rotta);
         float a_lat = (2 * Velocita_stimata_Ms * Velocita_stimata_Ms / L1) * sin(eta);
         float rollRad = atan(a_lat / 9.81);
@@ -615,7 +643,7 @@ void diagnosticaServi()
 //  GESTIONE LUCI DI STATO
 // ============================================================
 void gestisciLuci() {
-    
+
     // 1. EMERGENZA CRITICA: Guasto Servi (Tutti accesi fissi)
     if (!estSX_Ok || !estDX_Ok || !intSX_Ok || !intDX_Ok) {
         digitalWrite(PIN_LED_ROSSO_ALARM, HIGH); 
@@ -754,7 +782,7 @@ void inviaTelemetria(float pitch, float roll, float yaw, float velPitotKmh, floa
         // --- TEMPERATURE ---
         TELEMETRIA.print(Global_Temperatura_motore, 1);
         TELEMETRIA.print(","); // 29
-        TELEMETRIA.print(Global_Temperatura_teensy, 1);
+        TELEMETRIA.print(temp_aria_barometro, 1);
         TELEMETRIA.print(","); // 30
         
         // --- SATELLITI GPS ---
@@ -785,10 +813,6 @@ void calcolaPID(float targetAltitudine, float targetRoll,
 
     if (dt <= 0.0) return;
     tempoPassatoPID = tempoAttuale;
-
-    float kp_dinamico_roll  = Kp_roll  * global_fattoreReattivita;
-    float kp_dinamico_pitch = Kp_pitch * global_fattoreReattivita;
-
     // ----------------------------------------------------------
     // 2. PID ALTITUDINE
     // ----------------------------------------------------------
@@ -822,7 +846,7 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     // ----------------------------------------------------------
     float errorePitch = targetPitch_Auto - pitchReale;
 
-    float P_Pitch = kp_dinamico_pitch * errorePitch;
+    float P_Pitch = Kp_pitch * errorePitch;
 
     pid_sommaErroriPitch += errorePitch * dt;
     pid_sommaErroriPitch  = constrain(pid_sommaErroriPitch, -40.0, 40.0);
@@ -839,7 +863,7 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     // ----------------------------------------------------------
     float erroreRoll = targetRoll - rollReale;  
 
-    float P_Roll = kp_dinamico_roll * erroreRoll;
+    float P_Roll = Kp_roll * erroreRoll;
 
     pid_sommaErroriRoll += erroreRoll * dt;
     pid_sommaErroriRoll  = constrain(pid_sommaErroriRoll, -40.0, 40.0);
