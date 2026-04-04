@@ -1,399 +1,552 @@
 import pygame
 import sys
-import math
-import serial
+import serial  
+import threading 
+SERIAL_PORT = "COM3"  
+BAUD_RATE = 9600
 
-# ==========================================
-# 1. INIZIALIZZAZIONE E COSTANTI
-# ==========================================
 pygame.init()
 
-LARGHEZZA = 1280
-ALTEZZA   = 720
-schermo   = pygame.display.set_mode((LARGHEZZA, ALTEZZA))
-pygame.display.set_caption("GCS - PFD: Test Sensori Completo")
+W, H   = 1280, 720
+screen = pygame.display.set_mode((W, H))
+pygame.display.set_caption("GCS – Primary Flight Display")
+clock  = pygame.time.Clock()
 
-NERO         = (20,  20,  20)
-BIANCO       = (255, 255, 255)
-VERDE        = (46,  204, 113)
-ROSSO        = (231, 76,  60)
-GIALLO_DEBUG = (241, 196, 15)
-BLU_CIELO    = (52,  152, 219)
-GRIGIO_SCURO = (40,  40,  40)
+C_BG     = ( 8,  11,  18)   # sfondo principale
+C_PANEL  = (14,  18,  28)   # sfondo pannello
+C_BORDER = (36,  50,  76)   # bordi
+C_ACCENT = ( 0, 188, 255)   # ciano – titoli e accenti
+C_TEXT   = (205, 218, 240)  # testo standard
+C_DIM    = ( 82,  98, 126)  # testo secondario / etichette
+C_WHITE  = (242, 246, 255)  # testo luminoso / valori
+C_GREEN  = ( 40, 210,  88)  # stato OK
+C_YELLOW = (255, 200,   0)  # throttle / HUD
+C_RED    = (218,  48,  48)  # allarme / errore
+C_SKY    = ( 28,  96, 178)  # cielo orizzonte
+C_GROUND = (124,  80,  30)  # terra orizzonte
+C_CROSS  = (255, 210,   0)  # crosshair orizzonte
+F_HEAD  = pygame.font.SysFont("consolas", 21, bold=True)  # header principale
+F_TITLE = pygame.font.SysFont("consolas", 13, bold=True)  # titoli pannelli
+F_VAL   = pygame.font.SysFont("consolas", 15, bold=True)  # valori numerici
+F_LABEL = pygame.font.SysFont("consolas", 13)             # etichette
+F_SMALL = pygame.font.SysFont("consolas", 12)             # testo piccolo
 
-font_testo   = pygame.font.SysFont("consolas", 20, bold=True)
-font_piccolo = pygame.font.SysFont("consolas", 16)
-font_debug   = pygame.font.SysFont("consolas", 14, bold=True)
+# ── Orizzonte artificiale 
+PFD_CX, PFD_CY, PFD_R = W // 2, 245, 142
 
-# ==========================================
-# 2. VARIABILI GLOBALI DI VOLO
-# ==========================================
-satelliti        = 0
-voltaggio_motore = 0.0
-modalità         = "ATTESA DATI"
+# ── Box velocità e quota ai lati dell'orizzonte 
+BOX_W, BOX_H, BOX_GAP = 66, 34, 18
+SPD_BOX = pygame.Rect(PFD_CX - PFD_R - BOX_GAP - BOX_W, PFD_CY - BOX_H // 2, BOX_W, BOX_H)
+ALT_BOX = pygame.Rect(PFD_CX + PFD_R + BOX_GAP,          PFD_CY - BOX_H // 2, BOX_W, BOX_H)
 
-gass_motore_pid   = 0.0
-comando_pitch_pid = 0.0
-comando_roll_pid  = 0.0
-comando_yaw_pid   = 0.0
+# ── Pannelli laterali 
+POWER_PANEL = pygame.Rect( 24, 108, 378, 272)
+TEMP_PANEL  = pygame.Rect( 24, 390, 378, 122)
+SPEED_PANEL = pygame.Rect( 24, 522, 378, 182)
+SERVI_PANEL = pygame.Rect(878, 108, 378, 200)
+VSERV_PANEL = pygame.Rect(878, 320, 378, 193)
+NAV_PANEL   = pygame.Rect(428, 522, 424, 140)
+ORIENTATION_PANEL = pygame.Rect(428, 391, 424, 100)
+BATTERY_PANNEL =pygame.Rect(878, 522, 378, 180)
 
-comando_gass_rc  = 0.0
-comando_pitch_rc = 0.0
-comando_roll_rc  = 0.0
-comando_yaw_rc   = 0.0
+# ── Colonne servi nel pannello SERVI
+SERVI_X   = SERVI_PANEL.x + 28
+SERVI_Y   = SERVI_PANEL.y + 52
+SERVI_GAP = 88
 
-velocità_pitot = 0.0
-velocità_gps   = 0.0
-velocita_ms    = 0.0
-quota_m        = 0.0
 
-pitch_simulato = 0.0
-roll_simulato  = 0.0
-yaw_simulato   = 0.0   
+T = {
+    "mode":       "ATTESA",
+    "satellites":  0,
+    "v_motor":     0.0,   
+    "throttle":    0.0,    
+    "pitch":       0.0,
+    "roll":        0.0,
+    "yaw":         0.0,
+    "altitude":    0.0,   
+    "spd_pitot":   0.0,  
+    "spd_gps":     0.0,   
+    "spd_ms":      0.0,   
+    "dist_target": 0.0,
+    "hdg_target":  0.0,
+    "roll_target": 0.0,
+    "rc_pitch":    0.0,
+    "rc_roll":     0.0,
+    "rc_gas":      0.0,
+    "pid_pitch":   0.0,
+    "pid_roll":    0.0,
+    "pid_gas":     0.0,
+    "deg_isx":    90.0,
+    "deg_idx":    90.0,
+    "deg_esx":    90.0,
+    "deg_edx":    90.0,
+    "v_isx":       0.0,
+    "v_idx":       0.0,
+    "v_esx":       0.0,
+    "v_edx":       0.0,
+    "t_motor":     0.0,
+    "t_teensy":    0.0,
+    "v_teensy":        0.0,
+    "alarm_failsafe":  False,
+    "alarm_batt_motor":False,
+    "alarm_relay":     False,
+    "alarm_batt_teensy":False,
+    "alarm_crash":     False,
+    "in_flight":       False,
+    "ok_isx": True, "ok_idx": True, "ok_esx": True, "ok_edx": True,
+    "spd_fused":       0.0,
+    "lat":             0.0,
+    "lon":             0.0,
+    "relay":           False,
+}
 
-distanza_target = 0.0
-rotta_target    = 0.0
-target_roll     = 0.0
+def clamp(v, lo, hi):
+    return max(lo, min(v, hi))
 
-gradi_intSX = 90.0
-gradi_intDX = 90.0
-gradi_estSX = 90.0
-gradi_estDX = 90.0
-
-volt_S_int_sx = 0.0
-volt_S_int_dx = 0.0
-volt_S_est_sx = 0.0
-volt_S_est_dx = 0.0
-
-Temp_motore = 0.0
-Temp_teensy = 0.0
-
-clock = pygame.time.Clock()
-
-def costringi(valore, minimo, massimo):
-    return max(minimo, min(valore, massimo))
-PORTA_COM = 'COM3'  
-BAUD_RATE = 9600    
-
-try:
-    ricevente_lora = serial.Serial(PORTA_COM, BAUD_RATE, timeout=0.1)
-    print(f"Connesso con successo al modulo LoRa sulla porta {PORTA_COM}")
-    
-except Exception as e:
-    print(f"ATTENZIONE: Impossibile aprire la porta {PORTA_COM}.")
-    ricevente_lora = None
-# ==========================================
-# 3. PARSER CSV
-# ==========================================
-def elabora_telemetria(riga_csv):
+def parse_telemetry(line):
     """
-    Formato CSV (32 campi, indice 0 = '$'):
-      0:$  1:modo  2:spare  3:Vmot
-      4:VsIntSX  5:VsIntDX  6:VsEstSX  7:VsEstDX
-      8:spare  9:pitch  10:roll  11:yaw   <-- yaw ora letto!
-      12:quota  13:vPitot  14:vGPS  15:vStimata_kmh
-      16:distTarget  17:rottaTarget  18:targetRoll
-      19:rcPitch  20:rcRoll  21:rcGas
-      22:pidPitch  23:pidRoll  24:pidGas_raw(25-130)
-      25:grIntSX  26:grIntDX  27:grEstSX  28:grEstDX
-      29:Tmotore  30:Tteensy  31:satelliti
+    Formato CSV (36 campi, indice 0 = '$') — sincronizzato con inviaTelemetria() v2:
+      0  : $
+      1  : modalità volo        (1=Manuale, 2=Auto, 3=Failsafe)
+      2  : codiceAllarme        bitmask (b0=failsafe, b1=battMot, b2=relè, b3=battTsy, b4=schianto, b5=inVolo)
+      3  : V Motore             [V]
+      4  : V Teensy             [V]
+      5  : V Servo Int SX       [V]
+      6  : V Servo Int DX       [V]
+      7  : V Servo Est SX       [V]
+      8  : V Servo Est DX       [V]
+      9  : Salute servi         stringa 4 char "1111" (IntSX IntDX EstSX EstDX)
+      10 : Pitch                [°]
+      11 : Roll                 [°]
+      12 : Yaw                  [°]
+      13 : Altitudine relativa  [m]
+      14 : Velocità Pitot       [km/h]
+      15 : Velocità GPS         [km/h]
+      16 : Velocità stimata     [km/h]
+      17 : Distanza target      [m]
+      18 : Rotta verso target   [°]
+      19 : Target roll (L1)     [°]
+      20 : RC Pitch             [µs 172-1811]
+      21 : RC Roll              [µs]
+      22 : RC Gas               [µs]
+      23 : PID out Pitch        [µs]
+      24 : PID out Roll         [µs]
+      25 : PID out Gas          [µs ~1000-2000]
+      26 : Pos Servo Int SX     [°]
+      27 : Pos Servo Int DX     [°]
+      28 : Pos Servo Est SX     [°]
+      29 : Pos Servo Est DX     [°]
+      30 : Temperatura motore   [°C]
+      31 : Temperatura avionica [°C]
+      32 : Satelliti GPS
+      33 : Latitudine           [°]
+      34 : Longitudine          [°]
+      35 : Relè attivato        (0/1)
     """
-    global modalità, satelliti, voltaggio_motore
-    global gass_motore_pid, comando_pitch_pid, comando_roll_pid, comando_yaw_pid
-    global comando_gass_rc, comando_pitch_rc, comando_roll_rc, comando_yaw_rc
-    global velocità_pitot, velocità_gps, velocita_ms, quota_m
-    global pitch_simulato, roll_simulato, yaw_simulato
-    global distanza_target, rotta_target, target_roll
-    global gradi_intSX, gradi_intDX, gradi_estSX, gradi_estDX
-    global volt_S_int_sx, volt_S_int_dx, volt_S_est_sx, volt_S_est_dx
-    global Temp_motore, Temp_teensy
-
+    global T
     try:
-        dati = riga_csv.strip().split(',')
-        if len(dati) < 32 or dati[0] != '$':
-            print(f"[WARN] Pacchetto non valido (len={len(dati)})")
+        f = line.strip().split(',')
+        if len(f) < 36 or f[0] != '$':
+            print(f"[WARN] Pacchetto non valido (len={len(f)})")
             return
+        # ── Modalità volo ────────────────────────────────────────────────
+        T["mode"] = {1: "MANUALE", 2: "AUTO PID", 3: "FAILSAFE!"}.get(int(f[1]), "SCONOSCIUTA")
+        
+        # ── Bitmask allarmi ──────────────────────────────────────────────
+        alarm = int(f[2])
+        T["alarm_failsafe"] = bool(alarm & 1)
+        T["alarm_batt_motor"] = bool(alarm & 2)
+        T["alarm_relay"]    = bool(alarm & 4)
+        T["alarm_batt_teensy"]= bool(alarm & 8)
+        T["alarm_crash"]   = bool(alarm & 16)
+        T["in_flight"]     = bool(alarm & 32)
 
-        mod_int  = int(dati[1])
-        modalità = {1: "MANUALE", 2: "AUTO PID", 3: "FAILSAFE!"}.get(mod_int, "SCONOSCIUTA")
+        # ── Alimentazione ────────────────────────────────────────────────
+        T["v_motor"]  = float(f[3])
+        T["v_teensy"] = float(f[4])
+        T["v_isx"] = float(f[5])
+        T["v_idx"] = float(f[6])
+        T["v_esx"]  = float(f[7])
+        T["v_edx"]  = float(f[8])
 
-        voltaggio_motore = float(dati[3])
-        volt_S_int_sx    = float(dati[4])
-        volt_S_int_dx    = float(dati[5])
-        volt_S_est_sx    = float(dati[6])
-        volt_S_est_dx    = float(dati[7])
+        # ── Salute servi (stringa "1111") ────────────────────────────────
+        health    = f[9].strip()
+        T["ok_isx"] = len(health) > 0 and health[0] == '1'
+        T["ok_idx"] = len(health) > 1 and health[1] == '1'
+        T["ok_esx"] = len(health) > 2 and health[2] =='1'
+        T["ok_edx"] = len(health) > 3 and health[3] == '1'
 
-        pitch_simulato = float(dati[9])
-        roll_simulato  = float(dati[10])
-        yaw_simulato   = float(dati[11])  
+        # ── Assetto ──────────────────────────────────────────────────────
+        T["pitch"]  = float(f[10])
+        T["roll"]  = float(f[11])
+        T["yaw"] = float(f[12])
+        T["altitude"] = float(f[13])
 
-        quota_m        = float(dati[12])
-        velocità_pitot = float(dati[13])
-        velocità_gps   = float(dati[14])
-        velocita_ms    = float(dati[15]) / 3.6
+        # ── Velocità ─────────────────────────────────────────────────────
+        T["spd_pitot"]= float(f[14])
+        T["spd_gps"] = float(f[15])
+        T["spd_fused"]= float(f[16])
+        T["spd_ms"]  = T["spd_fused"] / 3.6   # km/h → m/s per l'HUD
 
-        distanza_target = float(dati[16])
-        rotta_target    = float(dati[17])
-        target_roll     = float(dati[18])
+        # ── Navigazione ──────────────────────────────────────────────────
+        T["dist_target"] = float(f[17])
+        T["hdg_target"]  = float(f[18])
+        T["roll_target"] = float(f[19])
 
-        comando_pitch_rc = float(dati[19])
-        comando_roll_rc  = float(dati[20])
-        comando_gass_rc  = float(dati[21])
+        # ── Input RC grezzo [µs] ─────────────────────────────────────────
+        T["rc_pitch"] = float(f[20])
+        T["rc_roll"] = float(f[21])
+        T["rc_gas"] = float(f[22])
 
-        comando_pitch_pid = float(dati[22])
-        comando_roll_pid  = float(dati[23])
-        gass_motore_pid   = costringi((float(dati[24]) - 25.0) / 105.0, 0.0, 1.0)
+        # ── Output PID/mixer ─────────────────────────────────────────────
+        T["pid_pitch"]= float(f[23])
+        T["pid_roll"] = float(f[24])
+        # outGas in µs (range tipico 1000-2000); normalizzato 0.0-1.0 per la barra
+        T["pid_gas"] = clamp((float(f[25]) - 1000.0) / 1000.0, 0.0, 1.0)
+        T["throttle"]  = T["pid_gas"]
 
-        gradi_intSX = float(dati[25])
-        gradi_intDX = float(dati[26])
-        gradi_estSX = float(dati[27])
-        gradi_estDX = float(dati[28])
+        # ── Posizione fisica servi [°] ───────────────────────────────────
+        T["deg_isx"] = float(f[26])
+        T["deg_idx"]= float(f[27])
+        T["deg_esx"]= float(f[28])
+        T["deg_edx"] = float(f[29])
 
-        Temp_motore = float(dati[29])
-        Temp_teensy = float(dati[30])
-        satelliti   = int(dati[31])
+        # ── Temperature ──────────────────────────────────────────────────
+        T["t_motor"]  = float(f[30])
+        T["t_teensy"] = float(f[31])
+
+        # ── GPS ──────────────────────────────────────────────────────────
+        T["satellites"] = int(f[32])
+        T["lat"]  = float(f[33])
+        T["lon"]  = float(f[34])
+
+        # ── Relè ─────────────────────────────────────────────────────────
+        T["relay"] = f[35].strip() == '1'
 
     except Exception as e:
         print(f"[ERR] Pacchetto corrotto saltato: {e}")
 
-# ==========================================
-# 4. FUNZIONI DI DISEGNO
-# ==========================================
-def disegna_batteria(superficie, x, y, larghezza, altezza,valore_attuale, valore_max, valore_min,etichetta="", colore=VERDE):
+def read_from_serial():
+    try:
 
-    if valore_max == valore_min:
-        return
-    
-    percentuale  = costringi((valore_attuale - valore_min) / (valore_max - valore_min), 0.0, 1.0)
-    colore_barra = ROSSO if percentuale < 0.2 else colore
-    spessore     = 3
+        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+        print(f"[INFO] Connesso a {SERIAL_PORT} a {BAUD_RATE} baud.")
+        
+        while True:
+            line_bytes = ser.readline()
+            
+            if line_bytes:
 
-    pygame.draw.rect(superficie, BIANCO, (x, y, larghezza, altezza), spessore)
-    margine   = spessore + 1
-    h_interna = int((altezza - margine * 2) * percentuale)
-    y_interna = y + altezza - margine - h_interna
+                line_str = line_bytes.decode('utf-8', errors='ignore').strip()
+                
+                parse_telemetry(line_str)
+                
+    except serial.SerialException as e:
+        print(f"[ERRORE CRITICO] Impossibile aprire la porta {SERIAL_PORT}: {e}")
+        print("Assicurati che l'USB sia collegata e di aver scritto la COM giusta.")
 
-    if h_interna > 0:
-        pygame.draw.rect(superficie, colore_barra,
-                         (x + margine, y_interna, larghezza - margine * 2, h_interna))
+def text(surf, s, pos, font, color, anchor="topleft"):
 
-    surf = font_piccolo.render(f"{valore_attuale:.2f}", True, BIANCO)
-    superficie.blit(surf, surf.get_rect(center=(x + larghezza // 2, y + altezza // 2)))
+    img = font.render(s, True, color)
+    surf.blit(img, img.get_rect(**{anchor: pos}))
 
-    if etichetta:
-        surf_e = font_piccolo.render(etichetta, True, BIANCO)
-        superficie.blit(surf_e, surf_e.get_rect(center=(x + larghezza // 2, y + altezza + 15)))
+def draw_panel(surf, rect, title=""):
 
+    BAR_H = 26
+    pygame.draw.rect(surf, C_PANEL,rect, border_radius=8)
+    pygame.draw.rect(surf, C_BORDER, rect, 2, border_radius=8)
+    if title:
+        bar = pygame.Rect(rect.x, rect.y, rect.w, BAR_H)
+        pygame.draw.rect(surf, C_BORDER, bar, 2,border_top_left_radius=8, border_top_right_radius=8)
+        text(surf, title, bar.center, F_TITLE, C_ACCENT, anchor="center")
 
-def disegna_testo(superficie, testo, valore, x, y, font, colore=BIANCO):
-    t = font.render(testo,       True, colore)
-    v = font.render(str(valore), True, colore)
-    superficie.blit(t, (x, y))
-    superficie.blit(v, (x + t.get_width(), y))
+def draw_kv(surf, label, value, x, y, col_v=C_WHITE, col_k=C_DIM,):
+    text(surf, label, (x, y), F_LABEL, col_k)
+    text(surf, value, (x + 110, y), F_VAL, col_v)
 
+def draw_vbar(surf, rect, value, vmin, vmax, color=C_GREEN):
+    pygame.draw.rect(surf, C_PANEL,  rect, border_radius=5)
+    pygame.draw.rect(surf, C_BORDER, rect, 2, border_radius=5)
+    if vmax > vmin:
+        pct = clamp((value - vmin) / (vmax - vmin), 0.0, 1.0)
+        fill_h = int((rect.height - 6) * pct)
+        if fill_h > 0:
+            bar_col = C_RED if pct < 0.2 else color
+            fill    = pygame.Rect(rect.x + 3, rect.bottom - 3 - fill_h,rect.width - 6, fill_h)
+            pygame.draw.rect(surf, bar_col, fill, border_radius=3)
+    text(surf, f"{value:.2f}", rect.center, F_SMALL, C_WHITE, anchor="center")
 
-def disegna_pid(superficie, x, y, larghezza, altezza, gass, pitch, roll, yaw):
-    pygame.draw.rect(superficie, BIANCO, (x, y, larghezza, altezza), 2)
-
-    titolo = "RC Controller" if modalità == "MANUALE" else "PID Controller"
-    surf_t = font_piccolo.render(titolo, True, BIANCO)
-    superficie.blit(surf_t, surf_t.get_rect(center=(x + larghezza // 2, y + 15)))
-
-    disegna_testo(superficie, "Cmd GAS:  ", f"{gass:.2f}",  x + 10, y + 40,  font_piccolo)
-    disegna_testo(superficie, "Cmd pitch:", f"{pitch:.1f}", x + 10, y + 65,  font_piccolo)
-    disegna_testo(superficie, "Cmd roll: ", f"{roll:.1f}",  x + 10, y + 90,  font_piccolo)
-    disegna_testo(superficie, "Cmd yaw:  ", f"{yaw:.1f}",   x + 10, y + 115, font_piccolo)
-
-
-def disegna_barra_servi(superficie, x, y, valore_gradi, etichetta,larghezza, altezza_led, spazio_led, num_led,stato_errore, voltaggio_servo):
-    delta  = valore_gradi - 90
-    leds   = [False] * 5
+def draw_servo_leds(surf, x, y, degrees, label, v_servo, error=False):
+    LED_W, LED_H, LED_GAP, N = 40, 20, 5, 5
+    delta = degrees - 90
+    leds  = [False] * N
     leds[2] = True
     if delta >  10: leds[3] = True
     if delta >  25: leds[4] = True
     if delta < -10: leds[1] = True
     if delta < -25: leds[0] = True
 
-    surf_e = font_piccolo.render(etichetta, True, BIANCO)
-    superficie.blit(surf_e, surf_e.get_rect(center=(x + larghezza // 2, y - 20)))
-
-    for i in range(num_led):
-        y_rect = y + (num_led - 1 - i) * (altezza_led + spazio_led)
-        if stato_errore:
-            colore_led = ROSSO
+    text(surf, label, (x + LED_W // 2, y - 18), F_SMALL, C_TEXT, anchor="center")
+    for i in range(N):
+        y_led = y + (N - 1 - i) *(LED_H + LED_GAP)
+        if error:
+            col = C_RED
         elif leds[i]:
-            colore_led = VERDE if i == 2 else BLU_CIELO
+            col = C_GREEN if i == 2 else C_ACCENT
         else:
-            colore_led = GRIGIO_SCURO
-        pygame.draw.rect(superficie, colore_led, (x, y_rect, larghezza, altezza_led))
-        pygame.draw.rect(superficie, NERO,(x, y_rect, larghezza, altezza_led), 1)
+            col = (22, 28, 42)
+        pygame.draw.rect(surf, col, (x, y_led, LED_W, LED_H), border_radius=3)
+        pygame.draw.rect(surf, C_BORDER, (x, y_led, LED_W, LED_H), 1, border_radius=3)
 
-    y_info   = y + num_led * (altezza_led + spazio_led) + 5
-    surf_val = font_piccolo.render("ERR!" if stato_errore else f"{int(valore_gradi)}°",True, ROSSO if stato_errore else BIANCO)
-    superficie.blit(surf_val, surf_val.get_rect(center=(x + larghezza // 2, y_info)))
-    surf_v = font_piccolo.render(f"{voltaggio_servo:.1f}V", True, BIANCO)
-    superficie.blit(surf_v, surf_v.get_rect(center=(x + larghezza // 2, y_info + 20)))
+    y_info = y + N * (LED_H + LED_GAP) + 6
+    text(surf, "ERR!" if error else f"{int(degrees)}°",
+         (x + LED_W // 2, y_info), F_SMALL,C_RED if error else C_WHITE, anchor="center")
 
+def draw_hud_box(surf, rect, value, label="", unit=""):
+    pygame.draw.rect(surf, (22, 28, 44), rect, border_radius=5)
+    pygame.draw.rect(surf, C_YELLOW,rect, 2,  border_radius=5)
+    if label:
+        text(surf, label, (rect.centerx,rect.top - 13), F_SMALL, C_DIM,  anchor="center")
+    text(surf, f"{value:.1f}", rect.center, F_VAL, C_YELLOW, anchor="center")
+    if unit:
+        text(surf, unit,(rect.centerx, rect.bottom + 6), F_SMALL, C_DIM, anchor="center")
 
-def disegna_orizzonte(superficie, cx, cy, raggio, pitch_deg, roll_deg):
-    diam   = raggio * 2
-    grande = int(raggio * 4.2)
-    px_deg = raggio / 25.0
-    split  = grande // 2 - int(pitch_deg * px_deg)
+def draw_horizon(surf, cx, cy, r, pitch_deg, roll_deg):
+    diam = r * 2
+    size = int(r * 4.2)
+    ppd = r / 25.0
+    split = size // 2 - int(pitch_deg * ppd)
 
-    bg = pygame.Surface((grande, grande))
-    bg.fill(BLU_CIELO)
-    if split < grande:
-        pygame.draw.rect(bg, (160, 110, 40), (0, max(0, split), grande, grande))
+    bg = pygame.Surface((size, size))
+    bg.fill(C_SKY)
+    if split < size:
+        pygame.draw.rect(bg, C_GROUND, (0, max(0, split), size, size))
     if split <= 0:
-        bg.fill((160, 110, 40))
-    if 0 <= split <= grande:
-        pygame.draw.line(bg, BIANCO, (0, split), (grande, split), 3)
+        bg.fill(C_GROUND)
+    if 0 <= split <= size:
+        pygame.draw.line(bg, (205, 222, 255), (0, split), (size, split), 2)
 
     for p in [-20, -10, 10, 20]:
-        py = split - int(p * px_deg)
-        if 4 < py < grande - 4:
-            lw  = raggio // 4
-            pygame.draw.line(bg, BIANCO, (grande // 2 - lw, py), (grande // 2 + lw, py), 1)
-            lbl = font_piccolo.render(f"{abs(p)}", True, BIANCO)
-            bg.blit(lbl, (grande // 2 + lw + 4,                  py - lbl.get_height() // 2))
-            bg.blit(lbl, (grande // 2 - lw - lbl.get_width() - 4, py - lbl.get_height() // 2))
+        py = split - int(p * ppd)
+        if 4 < py < size - 4:
+            lw  = r // 4
+            pygame.draw.line(bg, C_WHITE, (size // 2 - lw, py), (size // 2 + lw, py), 1)
+            lbl = F_SMALL.render(f"{abs(p)}", True, C_WHITE)
+            bg.blit(lbl, (size // 2 + lw + 4,py - lbl.get_height() // 2))
+            bg.blit(lbl, (size // 2 - lw - lbl.get_width() - 4, py - lbl.get_height() // 2))
 
-    rotated = pygame.transform.rotate(bg, -roll_deg)
-    rx, ry  = rotated.get_size()
-    content = pygame.Surface((diam, diam))
-    content.blit(rotated, (0, 0), (rx // 2 - raggio, ry // 2 - raggio, diam, diam))
-
+    rot  = pygame.transform.rotate(bg, -roll_deg)
+    rw, rh = rot.get_size()
+    crop = pygame.Surface((diam, diam))
+    crop.blit(rot, (0, 0), (rw // 2 - r, rh // 2 - r, diam, diam))
     mask = pygame.Surface((diam, diam), pygame.SRCALPHA)
-    pygame.draw.circle(mask, (255, 255, 255, 255), (raggio, raggio), raggio)
-    ca = content.convert_alpha()
+    pygame.draw.circle(mask, (255, 255, 255, 255), (r, r), r)
+    ca = crop.convert_alpha()
     ca.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-    superficie.blit(ca, (cx - raggio, cy - raggio))
+    surf.blit(ca, (cx - r, cy - r))
 
-    pygame.draw.circle(superficie, (200, 200, 200), (cx, cy), raggio, 3)
-    hw = raggio // 2
-    pygame.draw.line(superficie, GIALLO_DEBUG, (cx - hw,          cy), (cx - raggio // 6, cy), 4)
-    pygame.draw.line(superficie, GIALLO_DEBUG, (cx + raggio // 6, cy), (cx + hw,          cy), 4)
-    pygame.draw.circle(superficie, GIALLO_DEBUG, (cx, cy), 4)
+    pygame.draw.circle(surf, C_BORDER, (cx, cy), r, 2)
+    hw = r // 2
+    pygame.draw.line(surf, C_CROSS, (cx - hw, cy), (cx - r // 6, cy), 3)
+    pygame.draw.line(surf, C_CROSS, (cx + r // 6, cy), (cx + hw,cy), 3)
+    pygame.draw.circle(surf, C_CROSS, (cx, cy), 4)
 
+def draw_header(surf, t):
+    """Barra superiore: satelliti, modalità, yaw."""
 
-def disegna_valori_hud(superficie, x, y, larghezza, altezza, valore, etichetta="", unita=""):
-    pygame.draw.rect(superficie, (45, 45, 45),(x, y, larghezza, altezza))
-    pygame.draw.rect(superficie, (255, 220,  0), (x, y, larghezza, altezza), 2)
-
-    surf_val = font_piccolo.render(f"{valore:.1f}", True, (255, 220, 0))
-    superficie.blit(surf_val, surf_val.get_rect(center=(x + larghezza // 2, y + altezza // 2)))
-
-    if etichetta:
-        surf_lbl = font_piccolo.render(etichetta, True, BIANCO)
-        superficie.blit(surf_lbl, surf_lbl.get_rect(center=(x + larghezza // 2, y - 12)))
-
-    if unita:
-        surf_unit = font_piccolo.render(unita, True, BIANCO)
-        superficie.blit(surf_unit, surf_unit.get_rect(center=(x + larghezza // 2, y + altezza + 12)))
-
-
-# ==========================================
-# 5. LAYOUT COSTANTI
-# ==========================================
-PFD_CX    = LARGHEZZA // 2
-PFD_CY    = 241
-RAGGIO    = 140
-BOX_W     = 60
-BOX_H     = 30
-BOX_Y     = PFD_CY - BOX_H // 2
-GAP       = 15
-SPD_X     = PFD_CX - RAGGIO - GAP - BOX_W
-ALT_X     = PFD_CX + RAGGIO + GAP
-SERVI_X   = 870
-SERVI_Y   = 150
-SERVI_GAP = 85
-
-# ==========================================
-# 6. CARICA TELEMETRIAA
-# ==========================================
-if ricevente_lora is not None and ricevente_lora.in_waiting > 0:
-        try:
-            #  USB
-            dati_grezzi = ricevente_lora.readline()
-            
-            # La decodifica in testo normale (utf-8) 
-            riga_seriale = dati_grezzi.decode('utf-8').strip()
-            
-            if riga_seriale.startswith('$'):
-                elabora_telemetria(riga_seriale)
-                
-        except Exception as e:
-            pass
-
-# ==========================================
-# 7. CICLO PRINCIPALE
-# ==========================================
-while True:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
-
-    schermo.fill(NERO)
-
-    # ─── HEADER ───────────────────────────────────────────────────────────
-    col_sat = ROSSO if satelliti < 5 else BIANCO
-    disegna_testo(schermo, "Satelliti: ", satelliti,35,10, font_testo, col_sat)
-    disegna_testo(schermo, "Modalità:  ", modalità,LARGHEZZA // 2 - 94, 20, font_testo, BIANCO)
-    disegna_testo(schermo, "YAW: ", f"{yaw_simulato:.1f}°",
-                  LARGHEZZA // 2 + 160, 20, font_testo, BIANCO)  
-
-    # ─── PANNELLO SINISTRO ─────────────────────────────────────────────────
-    disegna_batteria(schermo, x=35,  y=150, larghezza=75, altezza=200,
-                     valore_attuale=voltaggio_motore,
-                     valore_max=16.8, valore_min=13.2,
-                     etichetta="MAIN 4S", colore=VERDE)
-
-    disegna_batteria(schermo, x=360, y=150, larghezza=50, altezza=200,
-                     valore_attuale=gass_motore_pid,
-                     valore_max=1.0, valore_min=0.0,
-                     etichetta="Throttle", colore=GIALLO_DEBUG)
-
-    if modalità != "MANUALE":
-        disegna_pid(schermo, x=141, y=150, larghezza=200, altezza=170,
-                    gass=gass_motore_pid,
-                    pitch=comando_pitch_pid,
-                    roll=comando_roll_pid,
-                    yaw=comando_yaw_pid)
+    text(surf, t["mode"],(W // 2, 12),   F_HEAD, C_WHITE,anchor="midtop")
+    if t["in_flight"]:
+        text(surf, f"IN FLIGHT",(W - 28, 12), F_HEAD, C_ACCENT, anchor="topright")
+    elif t["alarm_failsafe"]:
+        text(surf, f"FAILSAFE!",(W - 28, 12), F_HEAD, C_RED,anchor="topright")
+    elif t["alarm_crash"]:
+        text(surf, f"CRASH!", (W - 28, 12),F_HEAD, C_RED,anchor="topright")
     else:
-        disegna_pid(schermo, x=141, y=150, larghezza=200, altezza=170,
-                    gass=comando_gass_rc,
-                    pitch=comando_pitch_rc,
-                    roll=comando_roll_rc,
-                    yaw=comando_yaw_rc)
-
-    disegna_testo(schermo, "Temp Motore: ", f"{Temp_motore:.1f} °C",
-                  141, 340, font_piccolo, ROSSO if Temp_motore > 80 else BIANCO)
-    disegna_testo(schermo, "Temp Teensy: ", f"{Temp_teensy:.1f} °C",
-                  141, 365, font_piccolo, ROSSO if Temp_teensy > 60 else BIANCO)
-
-    # ─── PANNELLO DESTRO (servi) ───────────────────────────────────────────
-    def servo_ok(v): 
-        return 4.5 < v < 6.0
-
-    disegna_barra_servi(schermo, SERVI_X,SERVI_Y,gradi_intSX, "IntSX", 40, 20, 5, 5,not servo_ok(volt_S_int_sx), volt_S_int_sx)
-    disegna_barra_servi(schermo, SERVI_X + SERVI_GAP,    SERVI_Y,gradi_intDX, "IntDX", 40, 20, 5, 5,not servo_ok(volt_S_int_dx), volt_S_int_dx)
-    disegna_barra_servi(schermo, SERVI_X + SERVI_GAP * 2, SERVI_Y,gradi_estSX, "EstSX", 40, 20, 5, 5,not servo_ok(volt_S_est_sx), volt_S_est_sx)
-    disegna_barra_servi(schermo, SERVI_X + SERVI_GAP * 3, SERVI_Y,gradi_estDX, "EstDX", 40, 20, 5, 5,not servo_ok(volt_S_est_dx), volt_S_est_dx)
-
-    disegna_testo(schermo, "Velocità Pitot: ", f"{velocità_pitot:.1f} km/h", SERVI_X, 370, font_piccolo, BIANCO)
-    disegna_testo(schermo, "Velocità GPS  : ", f"{velocità_gps:.1f} km/h", SERVI_X, 390, font_piccolo, BIANCO)
-    disegna_testo(schermo, "Rotta Target  : ", f"{rotta_target:.1f}°",SERVI_X, 330, font_piccolo, BIANCO)
-    disegna_testo(schermo, "Target Roll   : ", f"{target_roll:.1f}°",SERVI_X, 350, font_piccolo, BIANCO)
-
-    # ─── PANNELLO CENTRALE (PFD) ───────────────────────────────────────────
-    disegna_valori_hud(schermo, SPD_X, BOX_Y, BOX_W, BOX_H,velocita_ms, etichetta="SPEED", unita="m/s")
-    disegna_orizzonte(schermo, PFD_CX, PFD_CY, RAGGIO, pitch_simulato, roll_simulato)
-    disegna_valori_hud(schermo, ALT_X, BOX_Y, BOX_W, BOX_H,quota_m, etichetta="ALT", unita="m")
-
-    disegna_testo(schermo, "Distanza Target: ", f"{distanza_target:.0f} m",PFD_CX - 110, 400, font_piccolo, BIANCO)
+        text(surf,f"ON GROUND",(W - 28, 12), F_HEAD, C_DIM,anchor="topright")
+    mx, my = pygame.mouse.get_pos()
+    text(surf, f"({mx},{my})", (28, 48), F_SMALL, C_DIM)
 
 
-    pygame.display.flip()
-    clock.tick(30)
+def draw_power_panel(surf, t):
+    draw_panel(surf, POWER_PANEL, "POWER")
+
+
+    thr = pygame.Rect(POWER_PANEL.x + 20, POWER_PANEL.y + 40, 100, 196)
+    draw_vbar(surf, thr, t["throttle"], 0.0, 1.0, C_GREEN if t["throttle"] < 0.8 else C_YELLOW)
+    text(surf, "THR", (thr.centerx, thr.bottom + 14), F_SMALL, C_DIM, anchor="center")
+
+    title= "RC CONTROLLER" if t["mode"] == "MANUALE" else "PID CONTROLLER"
+    kx = POWER_PANEL.x + 175
+    ky = POWER_PANEL.y + 40
+    text(surf, title, (kx, ky), F_TITLE, C_ACCENT)
+    ky += 22
+    if t["mode"] == "MANUALE":
+        rows = [("GAS",   f"{t['rc_gas']:.2f}"),
+                ("PITCH", f"{t['rc_pitch']:.1f}"),
+                ("ROLL",  f"{t['rc_roll']:.1f}"),
+                ("YAW",   "—")]
+    else:
+        rows = [("GAS",   f"{t['pid_gas']:.2f}"),
+                ("PITCH", f"{t['pid_pitch']:.1f}"),
+                ("ROLL",  f"{t['pid_roll']:.1f}"),
+                ("YAW",   "—")]
+    for label, val in rows:
+        draw_kv(surf, label, val, kx, ky)
+        ky += 38
+
+
+def draw_temp_panel(surf, t):
+    draw_panel(surf, TEMP_PANEL, "TEMPERATURE")
+    kx = TEMP_PANEL.x + 20
+    ky = TEMP_PANEL.y + 42
+    draw_kv(surf, "TEENSY", f"{t['t_teensy']:.1f} °C", kx, ky, col_v=C_WHITE if t["t_teensy"] < 60 else C_YELLOW if t["t_teensy"] < 65 else C_RED)
+    draw_kv(surf, "MOTORE", f"{t['t_motor']:.1f} °C",  kx, ky + 34, col_v=C_WHITE if t["t_motor"] < 80 else C_YELLOW if t["t_motor"] < 85 else C_RED)
+
+
+def draw_speed_panel(surf, t):
+    draw_panel(surf, SPEED_PANEL, "SPEED")
+    entries = [("PITOT", t["spd_pitot"], "km/h"),("GPS",   t["spd_gps"],   "km/h"),("EST",   t["spd_ms"],    "m/s")]
+    bw, bh, gap = 88, 120, 10
+    bx = SPEED_PANEL.x + 18
+    by = SPEED_PANEL.y + 50
+    for label, val, unit in entries:
+        r = pygame.Rect(bx, by, bw, bh)
+        draw_vbar(surf, r, val, 0, 100, C_GREEN)
+        text(surf, label, (r.centerx, r.top - 14), F_SMALL, C_DIM,  anchor="center")
+        text(surf, unit,  (r.centerx, r.bottom + 6), F_SMALL, C_DIM, anchor="center")
+        bx += bw + gap
+
+ 
+def draw_servi_panel(surf, t):
+    draw_panel(surf, SERVI_PANEL, "SERVI")
+    servos = [(t["deg_isx"], "Int SX", t["v_isx"]),(t["deg_idx"], "Int DX", t["v_idx"]),(t["deg_esx"], "Est SX", t["v_esx"]),(t["deg_edx"], "Est DX", t["v_edx"])]
+
+    def servo_ok(v): return 4.5 < v < 6.0
+
+    for i, (deg, lbl, v) in enumerate(servos):
+        draw_servo_leds(surf, SERVI_X + i * SERVI_GAP, SERVI_Y,deg, lbl, v, error=not servo_ok(v))
+
+def draw_vserv_panel(surf, t):
+    draw_panel(surf, VSERV_PANEL, "TENSIONE SERVI")
+    labels = ["Int SX", "Int DX", "Est SX", "Est DX"]
+    vals   = [t["v_isx"], t["v_idx"], t["v_esx"], t["v_edx"]]
+    bw, bh, gap = 72, 120, 16
+    bx = VSERV_PANEL.x + 20
+    by = VSERV_PANEL.y + 55
+    for label, val in zip(labels, vals):
+        ok  = 4.5 < val < 6.0
+        col = C_GREEN if ok else C_RED
+        r   = pygame.Rect(bx, by, bw, bh)
+        draw_vbar(surf, r, val, 4.0, 6.5, col)
+        text(surf, label, (r.centerx, r.top - 14), F_SMALL, C_DIM, anchor="center")
+        bx += bw + gap
+
+def draw_pfd_center(surf, t):
+    draw_horizon(surf, PFD_CX, PFD_CY, PFD_R, t["pitch"], t["roll"])
+    draw_hud_box(surf, SPD_BOX, t["spd_ms"],   "SPEED", "m/s")
+    draw_hud_box(surf, ALT_BOX, t["altitude"], "ALT",   "m")
+    text(surf, f"TARGET  {t['dist_target']:.0f} m",
+         (PFD_CX, PFD_CY + PFD_R + 26), F_LABEL, C_DIM, anchor="midtop")
+    
+def navigation_info_pannel(surf,t):
+    draw_panel(surf, NAV_PANEL, "NAV INFO")
+    kx = NAV_PANEL.x + 20
+    ky = NAV_PANEL.y + 40
+    draw_kv(surf, "DIST TGT", f"{t['dist_target']:.1f} m", kx, ky, col_v=C_WHITE if not t["dist_target"] < 150 else C_YELLOW)
+    draw_kv(surf, "HDG TGT",  f"{t['hdg_target']:.1f}°", kx, ky + 34)
+    draw_kv(surf, "ROLL TGT", f"{t['roll_target']:.1f}°", kx, ky + 68)
+    draw_kv(surf, "SATELLITES", f"{t['satellites']:.1f}", kx+215 , ky, col_v=C_WHITE if t["satellites"] >= 5 else C_RED)
+    draw_kv(surf, "LAT", f"{t['lat']:.6f}", kx+215, ky + 34)
+    draw_kv(surf, "LON", f"{t['lon']:.6f}", kx+215, ky + 68)
+
+def battery_pannel(surf, t):
+    draw_panel(surf, BATTERY_PANNEL, "BATTERY")
+    
+    C_VUOTO = (18, 26, 42)
+    kx = BATTERY_PANNEL.x + 40
+    ky = BATTERY_PANNEL.y + 40
+    bar_w, bar_h = 60, 100
+    gap = 180  
+
+    # 1. BATTERIA TEENSY (Sinistra)
+    V_t = pygame.Rect(kx, ky, bar_w, bar_h)
+    draw_vbar(surf, V_t, t["v_teensy"], 4.0, 6.5, C_GREEN if not t["alarm_batt_teensy"] else C_RED)
+    text(surf, "V SYS", (V_t.centerx, V_t.bottom + 14), F_SMALL, C_DIM, anchor="center")
+
+    # 2. BATTERIA MOTORE (Destra)
+    V_m = pygame.Rect(kx + bar_w + gap, ky, bar_w, bar_h)
+    draw_vbar(surf, V_m, t["v_motor"], 12.0, 16.8, C_GREEN if not t["alarm_batt_motor"] else C_RED)
+    text(surf, "V MOT", (V_m.centerx, V_m.bottom + 14), F_SMALL, C_DIM, anchor="center")
+
+    # 3. TUBO E VALVOLA RELÈ
+    rele_on = t["relay"]
+    pipe_h = 14
+    pipe_y = ky + bar_h // 2 - pipe_h // 2
+    pipe_x1 = V_t.right     
+    
+    # Disegno sfondo del tubo
+    pygame.draw.rect(surf, C_BORDER, (pipe_x1, pipe_y, gap, pipe_h)) 
+    pygame.draw.rect(surf, C_VUOTO, (pipe_x1, pipe_y+2, gap, pipe_h-4)) 
+    if rele_on:
+        pygame.draw.rect(surf, C_GREEN, (pipe_x1, pipe_y+2, gap, pipe_h-4))
+
+    # Dimensioni e posizione corpo valvola 
+    vw, vh = 32, 32
+    vx = pipe_x1 + gap // 2 - vw // 2
+    vy = ky + bar_h // 2 - vh // 2
+    
+    # Colore della valvola in base allo stato
+    valve_color = C_GREEN if rele_on else C_RED
+    
+    # Corpo valvola 
+    pygame.draw.rect(surf, (14, 20, 32), (vx, vy, vw, vh), border_radius=4)
+    pygame.draw.rect(surf, valve_color, (vx, vy, vw, vh), 2, border_radius=4)
+
+    # Disegno dell'otturatore interno
+    if rele_on:
+        pygame.draw.rect(surf, C_GREEN, (vx + 4, vy + vh // 2 - 4, vw - 8, 8))
+        lbl_txt = "FAILOVER ON"
+    else:
+        pygame.draw.rect(surf, C_RED, (vx + vw // 2 - 4, vy + 4, 8, vh - 8))
+        lbl_txt = "ISOLATI"
+
+    # Etichetta sopra la valvola
+    text(surf, lbl_txt, (vx + vw // 2, vy - 12), F_SMALL, valve_color, anchor="center")
+
+def posizione(surf,t):
+    draw_panel(surf, ORIENTATION_PANEL, "ORIENTAZIONE")
+    kx = ORIENTATION_PANEL.x + 20
+    ky = ORIENTATION_PANEL.y + 40
+    draw_kv(surf, "ROLL", f"{t['roll']:.1f}°", kx, ky , col_v=C_WHITE if abs(t["roll"]) < 30 else C_YELLOW if abs(t["roll"]) < 35 else C_RED)
+    draw_kv(surf, "PITCH",  f"{t['pitch']:.1f}°", kx, ky + 34, col_v=C_WHITE if abs(t["pitch"]) < 15 else C_YELLOW if abs(t["pitch"]) < 20 else C_RED)
+    draw_kv(surf, "YAW", f"{t['yaw']:.1f}°", kx+215, ky )
+    draw_kv(surf, "SPEED km/h", f"{t['spd_fused']:.1f} km/h", kx+215, ky + 34, col_v=C_WHITE if t["spd_fused"] < 70 else C_YELLOW if t["spd_fused"] < 90 else C_RED)
+ 
+def main():
+
+    thread_seriale = threading.Thread(target=read_from_serial, daemon=True)
+    thread_seriale.start()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+
+        screen.fill(C_BG)
+        draw_header(screen, T)
+        draw_power_panel(screen, T)
+        draw_temp_panel(screen, T)
+        draw_speed_panel(screen, T)
+        draw_servi_panel(screen, T)
+        draw_vserv_panel(screen, T)
+        draw_pfd_center(screen, T)
+        navigation_info_pannel(screen, T)
+        posizione(screen, T)
+        battery_pannel(screen, T)
+
+        pygame.display.flip()
+        clock.tick(30)
+
+if __name__ == "__main__":
+    main()
