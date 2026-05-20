@@ -1,16 +1,21 @@
 import pygame
 import sys
 import serial  
-import threading 
+import threading
+import os
+
 SERIAL_PORT = "COM3"  
 BAUD_RATE = 9600
 
 pygame.init()
+pygame.mixer.init()
 
 W, H   = 1280, 720
 screen = pygame.display.set_mode((W, H))
 pygame.display.set_caption("GCS – Primary Flight Display")
 clock  = pygame.time.Clock()
+
+CARTELLA_AUDIO = r"C:\Users\Utente\Documents\coding\Fisica-v3-main\drone\Drone\audio_gpws"
 
 C_BG     = ( 8,  11,  18)   # sfondo principale
 C_PANEL  = (14,  18,  28)   # sfondo pannello
@@ -30,6 +35,85 @@ F_TITLE = pygame.font.SysFont("consolas", 13, bold=True)  # titoli pannelli
 F_VAL   = pygame.font.SysFont("consolas", 15, bold=True)  # valori numerici
 F_LABEL = pygame.font.SysFont("consolas", 13)             # etichette
 F_SMALL = pygame.font.SysFont("consolas", 12)             # testo piccolo
+
+
+
+# Cooldown audio (ms) 
+CD_PULL_UP          = 7500
+CD_TERRAIN_PULL_UP  = 5500
+CD_TERRAIN          = 5500
+CD_SINK_RATE        = 6500
+CD_DONT_SINK        = 7500
+CD_BANK_ANGLE       = 7500
+CD_STALL            = 5720
+CD_AIRSPEED_LOW     = 9500
+CD_FLIGHT_SLOW      = 6500
+CD_OVERSPEED        = 11500
+CD_ERRORE           = 8500
+
+# ── Roll 
+ROLL_WARN   = 30     # GIALLO in HUD
+ROLL_CRIT   = 35     # ROSSO  in HUD + "bank_angle.wav"
+
+# ── Pitch 
+PITCH_WARN  = 15     # GIALLO
+PITCH_CRIT  = 20     # ROSSO  in HUD + "pitch.wav"
+
+# ── Velocità (km/h) 
+SPD_STALL   = 22     # < soglia → "stall.wav" + ROSSO
+SPD_AIR_LOW = 35     # < soglia → "air_speed_low.wav"+ GIALLO
+SPD_SLOW    = 45     # < soglia → "fligh slow.wav"
+SPD_WARN    = 70     # >= soglia → GIALLO in HUD
+SPD_CRIT    = 90     # >= soglia → ROSSO  in HUD + "overspeed.wav"
+
+# ── Discesa (m/s, negativo = scende) 
+VDISCESA_PULL_UP    = -1.0   # + alt < ALT_PULL_UP   → pull_up
+VDISCESA_TERRAIN_PU = -0.5   # + alt < ALT_TERRAIN_PU → terrain pull up
+VDISCESA_TERRAIN    = -0.3   # + alt < ALT_TERRAIN    → terrain
+VDISCESA_DONT_SINK  = -0.3   # + alt < ALT_DONT_SINK  → dont sink
+VDISCESA_SINK_RATE  = -4.0   # qualsiasi quota        → sink rate
+VDISCESA_CALLOUT    = -0.2   # attiva callout quota
+
+# ── Quote (m) 
+ALT_PULL_UP       =  5
+ALT_TERRAIN_PU    = 10
+ALT_TERRAIN       = 20
+ALT_DONT_SINK     = 15
+ALT_RESET_CALLOUT = 50   # sopra questa quota → reset callout
+
+# ── Finestre callout quota (±2 m) ────────────────────────────
+CALLOUT_40_LO, CALLOUT_40_HI = 38, 42
+CALLOUT_30_LO, CALLOUT_30_HI = 28, 32
+CALLOUT_20_LO, CALLOUT_20_HI = 18, 22
+CALLOUT_10_LO, CALLOUT_10_HI =  8, 12
+
+# ── Temperatura (°C)
+T_TEENSY_WARN  = 60   # >= soglia → GIALLO
+T_TEENSY_CRIT  = 65   # >= soglia → ROSSO + "errore.wav"
+
+T_MOTOR_WARN   = 80   # >= soglia → GIALLO
+T_MOTOR_CRIT   = 85   # >= soglia → ROSSO + "errore.wav"
+
+# ── Tensione servo (V) 
+SERVO_V_MIN = 4.5    # fuori range → servo ERROR
+SERVO_V_MAX = 6.0
+
+# ── Scale barre batteria (V) 
+VBAR_TEENSY_MIN = 4.0
+VBAR_TEENSY_MAX = 6.5
+
+VBAR_MOTOR_MIN  = 12.0
+VBAR_MOTOR_MAX  = 16.8
+
+# ── Distanza target (m)
+DIST_TGT_WARN = 150   # < soglia → GIALLO
+
+# ── Satelliti GPS 
+SAT_MIN = 5           # < soglia → ROSSO
+
+# ── Throttle 
+THR_WARN = 0.8        # >= soglia → barra GIALLA
+
 
 # ── Orizzonte artificiale 
 PFD_CX, PFD_CY, PFD_R = W // 2, 245, 142
@@ -57,6 +141,7 @@ SERVI_GAP = 88
 
 T = {
     "mode":       "ATTESA",
+    "serial_ok":  False,
     "satellites":  0,
     "v_motor":     0.0,   
     "throttle":    0.0,    
@@ -227,23 +312,19 @@ def parse_telemetry(line):
         print(f"[ERR] Pacchetto corrotto saltato: {e}")
 
 def read_from_serial():
-    try:
-
-        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-        print(f"[INFO] Connesso a {SERIAL_PORT} a {BAUD_RATE} baud.")
-        
-        while True:
-            line_bytes = ser.readline()
-            
-            if line_bytes:
-
-                line_str = line_bytes.decode('utf-8', errors='ignore').strip()
-                
-                parse_telemetry(line_str)
-                
-    except serial.SerialException as e:
-        print(f"[ERRORE CRITICO] Impossibile aprire la porta {SERIAL_PORT}: {e}")
-        print("Assicurati che l'USB sia collegata e di aver scritto la COM giusta.")
+    while True:
+        try:
+            ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+            print(f"[SERIAL] Connesso a {SERIAL_PORT} @ {BAUD_RATE} baud.")
+            T["serial_ok"] = True
+            while True:
+                raw = ser.readline()
+                if raw:
+                    parse_telemetry(raw.decode('utf-8', errors='ignore').strip())
+        except serial.SerialException as e:
+            T["serial_ok"] = False
+            print(f"[SERIAL] Porta non disponibile: {e} — nuovo tentativo in 3s")
+            pygame.time.wait(3000)
 
 def text(surf, s, pos, font, color, anchor="topleft"):
 
@@ -251,7 +332,6 @@ def text(surf, s, pos, font, color, anchor="topleft"):
     surf.blit(img, img.get_rect(**{anchor: pos}))
 
 def draw_panel(surf, rect, title=""):
-
     BAR_H = 26
     pygame.draw.rect(surf, C_PANEL,rect, border_radius=8)
     pygame.draw.rect(surf, C_BORDER, rect, 2, border_radius=8)
@@ -363,21 +443,24 @@ def draw_header(surf, t):
         text(surf, f"CRASH!", (W - 28, 12),F_HEAD, C_RED,anchor="topright")
     else:
         text(surf,f"ON GROUND",(W - 28, 12), F_HEAD, C_DIM,anchor="topright")
-    mx, my = pygame.mouse.get_pos()
-    text(surf, f"({mx},{my})", (28, 48), F_SMALL, C_DIM)
+
+    # Indicatore connessione seriale
+    serial_col = C_GREEN if t["serial_ok"] else C_RED
+    serial_lbl = f"SERIAL {SERIAL_PORT}" if t["serial_ok"] else f"NO SERIAL ({SERIAL_PORT})"
+    text(surf, serial_lbl, (28, 12), F_TITLE, serial_col)
 
 
 def draw_power_panel(surf, t):
     draw_panel(surf, POWER_PANEL, "POWER")
 
-
     thr = pygame.Rect(POWER_PANEL.x + 20, POWER_PANEL.y + 40, 100, 196)
-    draw_vbar(surf, thr, t["throttle"], 0.0, 1.0, C_GREEN if t["throttle"] < 0.8 else C_YELLOW)
+    draw_vbar(surf, thr, t["throttle"], 0.0, 1.0,
+              C_GREEN if t["throttle"] < THR_WARN else C_YELLOW)
     text(surf, "THR", (thr.centerx, thr.bottom + 14), F_SMALL, C_DIM, anchor="center")
 
-    title= "RC CONTROLLER" if t["mode"] == "MANUALE" else "PID CONTROLLER"
-    kx = POWER_PANEL.x + 175
-    ky = POWER_PANEL.y + 40
+    title = "RC CONTROLLER" if t["mode"] == "MANUALE" else "PID CONTROLLER"
+    kx    = POWER_PANEL.x + 175
+    ky    = POWER_PANEL.y + 40
     text(surf, title, (kx, ky), F_TITLE, C_ACCENT)
     ky += 22
     if t["mode"] == "MANUALE":
@@ -399,8 +482,14 @@ def draw_temp_panel(surf, t):
     draw_panel(surf, TEMP_PANEL, "TEMPERATURE")
     kx = TEMP_PANEL.x + 20
     ky = TEMP_PANEL.y + 42
-    draw_kv(surf, "TEENSY", f"{t['t_teensy']:.1f} °C", kx, ky, col_v=C_WHITE if t["t_teensy"] < 60 else C_YELLOW if t["t_teensy"] < 65 else C_RED)
-    draw_kv(surf, "MOTORE", f"{t['t_motor']:.1f} °C",  kx, ky + 34, col_v=C_WHITE if t["t_motor"] < 80 else C_YELLOW if t["t_motor"] < 85 else C_RED)
+    draw_kv(surf, "TEENSY", f"{t['t_teensy']:.1f} °C", kx, ky,
+            col_v=(C_WHITE  if t["t_teensy"] < T_TEENSY_WARN
+                   else C_YELLOW if t["t_teensy"] < T_TEENSY_CRIT
+                   else C_RED))
+    draw_kv(surf, "MOTORE", f"{t['t_motor']:.1f} °C", kx, ky + 34,
+            col_v=(C_WHITE  if t["t_motor"] < T_MOTOR_WARN
+                   else C_YELLOW if t["t_motor"] < T_MOTOR_CRIT
+                   else C_RED))
 
 
 def draw_speed_panel(surf, t):
@@ -416,12 +505,13 @@ def draw_speed_panel(surf, t):
         text(surf, unit,  (r.centerx, r.bottom + 6), F_SMALL, C_DIM, anchor="center")
         bx += bw + gap
 
- 
+def servo_ok(v):
+    return SERVO_V_MIN < v < SERVO_V_MAX
+
+
 def draw_servi_panel(surf, t):
     draw_panel(surf, SERVI_PANEL, "SERVI")
     servos = [(t["deg_isx"], "Int SX", t["v_isx"]),(t["deg_idx"], "Int DX", t["v_idx"]),(t["deg_esx"], "Est SX", t["v_esx"]),(t["deg_edx"], "Est DX", t["v_edx"])]
-
-    def servo_ok(v): return 4.5 < v < 6.0
 
     for i, (deg, lbl, v) in enumerate(servos):
         draw_servo_leds(surf, SERVI_X + i * SERVI_GAP, SERVI_Y,deg, lbl, v, error=not servo_ok(v))
@@ -434,10 +524,10 @@ def draw_vserv_panel(surf, t):
     bx = VSERV_PANEL.x + 20
     by = VSERV_PANEL.y + 55
     for label, val in zip(labels, vals):
-        ok  = 4.5 < val < 6.0
+        ok  = servo_ok(val)
         col = C_GREEN if ok else C_RED
         r   = pygame.Rect(bx, by, bw, bh)
-        draw_vbar(surf, r, val, 4.0, 6.5, col)
+        draw_vbar(surf, r, val, SERVO_V_MIN - 0.5, SERVO_V_MAX + 0.5, col)
         text(surf, label, (r.centerx, r.top - 14), F_SMALL, C_DIM, anchor="center")
         bx += bw + gap
 
@@ -448,82 +538,218 @@ def draw_pfd_center(surf, t):
     text(surf, f"TARGET  {t['dist_target']:.0f} m",
          (PFD_CX, PFD_CY + PFD_R + 26), F_LABEL, C_DIM, anchor="midtop")
     
-def navigation_info_pannel(surf,t):
+def navigation_info_pannel(surf, t):
     draw_panel(surf, NAV_PANEL, "NAV INFO")
     kx = NAV_PANEL.x + 20
     ky = NAV_PANEL.y + 40
-    draw_kv(surf, "DIST TGT", f"{t['dist_target']:.1f} m", kx, ky, col_v=C_WHITE if not t["dist_target"] < 150 else C_YELLOW)
-    draw_kv(surf, "HDG TGT",  f"{t['hdg_target']:.1f}°", kx, ky + 34)
-    draw_kv(surf, "ROLL TGT", f"{t['roll_target']:.1f}°", kx, ky + 68)
-    draw_kv(surf, "SATELLITES", f"{t['satellites']:.1f}", kx+215 , ky, col_v=C_WHITE if t["satellites"] >= 5 else C_RED)
-    draw_kv(surf, "LAT", f"{t['lat']:.6f}", kx+215, ky + 34)
-    draw_kv(surf, "LON", f"{t['lon']:.6f}", kx+215, ky + 68)
+    draw_kv(surf, "DIST TGT",   f"{t['dist_target']:.1f} m", kx, ky,
+            col_v=C_WHITE if t["dist_target"] >= DIST_TGT_WARN else C_YELLOW)
+    draw_kv(surf, "HDG TGT",    f"{t['hdg_target']:.1f}°",   kx, ky + 34)
+    draw_kv(surf, "ROLL TGT",   f"{t['roll_target']:.1f}°",  kx, ky + 68)
+    draw_kv(surf, "SATELLITES", f"{t['satellites']}",         kx + 215, ky,
+            col_v=C_WHITE if t["satellites"] >= SAT_MIN else C_RED)
+    draw_kv(surf, "LAT",        f"{t['lat']:.6f}",            kx + 215, ky + 34)
+    draw_kv(surf, "LON",        f"{t['lon']:.6f}",            kx + 215, ky + 68)
 
 def battery_pannel(surf, t):
     draw_panel(surf, BATTERY_PANNEL, "BATTERY")
-    
     C_VUOTO = (18, 26, 42)
     kx = BATTERY_PANNEL.x + 40
     ky = BATTERY_PANNEL.y + 40
     bar_w, bar_h = 60, 100
-    gap = 180  
+    gap = 180
 
-    # 1. BATTERIA TEENSY (Sinistra)
     V_t = pygame.Rect(kx, ky, bar_w, bar_h)
-    draw_vbar(surf, V_t, t["v_teensy"], 4.0, 6.5, C_GREEN if not t["alarm_batt_teensy"] else C_RED)
+    draw_vbar(surf, V_t, t["v_teensy"], VBAR_TEENSY_MIN, VBAR_TEENSY_MAX,
+              C_GREEN if not t["alarm_batt_teensy"] else C_RED)
     text(surf, "V SYS", (V_t.centerx, V_t.bottom + 14), F_SMALL, C_DIM, anchor="center")
 
-    # 2. BATTERIA MOTORE (Destra)
     V_m = pygame.Rect(kx + bar_w + gap, ky, bar_w, bar_h)
-    draw_vbar(surf, V_m, t["v_motor"], 12.0, 16.8, C_GREEN if not t["alarm_batt_motor"] else C_RED)
+    draw_vbar(surf, V_m, t["v_motor"], VBAR_MOTOR_MIN, VBAR_MOTOR_MAX,
+              C_GREEN if not t["alarm_batt_motor"] else C_RED)
     text(surf, "V MOT", (V_m.centerx, V_m.bottom + 14), F_SMALL, C_DIM, anchor="center")
 
-    # 3. TUBO E VALVOLA RELÈ
     rele_on = t["relay"]
-    pipe_h = 14
-    pipe_y = ky + bar_h // 2 - pipe_h // 2
-    pipe_x1 = V_t.right     
-    
-    # Disegno sfondo del tubo
-    pygame.draw.rect(surf, C_BORDER, (pipe_x1, pipe_y, gap, pipe_h)) 
-    pygame.draw.rect(surf, C_VUOTO, (pipe_x1, pipe_y+2, gap, pipe_h-4)) 
+    pipe_h  = 14
+    pipe_y  = ky + bar_h // 2 - pipe_h // 2
+    pipe_x1 = V_t.right
+    pygame.draw.rect(surf, C_BORDER, (pipe_x1, pipe_y,   gap, pipe_h))
+    pygame.draw.rect(surf, C_VUOTO,  (pipe_x1, pipe_y+2, gap, pipe_h-4))
     if rele_on:
         pygame.draw.rect(surf, C_GREEN, (pipe_x1, pipe_y+2, gap, pipe_h-4))
 
-    # Dimensioni e posizione corpo valvola 
     vw, vh = 32, 32
     vx = pipe_x1 + gap // 2 - vw // 2
     vy = ky + bar_h // 2 - vh // 2
-    
-    # Colore della valvola in base allo stato
     valve_color = C_GREEN if rele_on else C_RED
-    
-    # Corpo valvola 
     pygame.draw.rect(surf, (14, 20, 32), (vx, vy, vw, vh), border_radius=4)
-    pygame.draw.rect(surf, valve_color, (vx, vy, vw, vh), 2, border_radius=4)
-
-    # Disegno dell'otturatore interno
+    pygame.draw.rect(surf, valve_color,  (vx, vy, vw, vh), 2, border_radius=4)
     if rele_on:
         pygame.draw.rect(surf, C_GREEN, (vx + 4, vy + vh // 2 - 4, vw - 8, 8))
         lbl_txt = "FAILOVER ON"
     else:
         pygame.draw.rect(surf, C_RED, (vx + vw // 2 - 4, vy + 4, 8, vh - 8))
         lbl_txt = "ISOLATI"
-
-    # Etichetta sopra la valvola
     text(surf, lbl_txt, (vx + vw // 2, vy - 12), F_SMALL, valve_color, anchor="center")
 
-def posizione(surf,t):
+def posizione(surf, t):
     draw_panel(surf, ORIENTATION_PANEL, "ORIENTAZIONE")
     kx = ORIENTATION_PANEL.x + 20
     ky = ORIENTATION_PANEL.y + 40
-    draw_kv(surf, "ROLL", f"{t['roll']:.1f}°", kx, ky , col_v=C_WHITE if abs(t["roll"]) < 30 else C_YELLOW if abs(t["roll"]) < 35 else C_RED)
-    draw_kv(surf, "PITCH",  f"{t['pitch']:.1f}°", kx, ky + 34, col_v=C_WHITE if abs(t["pitch"]) < 15 else C_YELLOW if abs(t["pitch"]) < 20 else C_RED)
-    draw_kv(surf, "YAW", f"{t['yaw']:.1f}°", kx+215, ky )
-    draw_kv(surf, "SPEED km/h", f"{t['spd_fused']:.1f} km/h", kx+215, ky + 34, col_v=C_WHITE if t["spd_fused"] < 70 else C_YELLOW if t["spd_fused"] < 90 else C_RED)
- 
-def main():
+    draw_kv(surf, "ROLL",      f"{t['roll']:.1f}°",      kx, ky,
+            col_v=(C_WHITE  if abs(t["roll"])  < ROLL_WARN
+                   else C_YELLOW if abs(t["roll"])  < ROLL_CRIT
+                   else C_RED))
+    draw_kv(surf, "PITCH",     f"{t['pitch']:.1f}°",     kx, ky + 34,
+            col_v=(C_WHITE  if abs(t["pitch"]) < PITCH_WARN
+                   else C_YELLOW if abs(t["pitch"]) < PITCH_CRIT
+                   else C_RED))
+    draw_kv(surf, "YAW",       f"{t['yaw']:.1f}°",       kx + 215, ky)
+    draw_kv(surf, "SPEED km/h",f"{t['spd_fused']:.1f} km/h", kx + 215, ky + 34,
+            col_v=(C_WHITE  if t["spd_fused"] < SPD_WARN
+                   else C_YELLOW if t["spd_fused"] < SPD_CRIT
+                   else C_RED))
 
+
+def riproduci_audio(nome_file: str) -> bool:
+    percorso = os.path.join(CARTELLA_AUDIO, nome_file)
+    if not os.path.exists(percorso):
+        print(f"[AUDIO] Mancante: {percorso}")
+        return False
+    if pygame.mixer.music.get_busy():
+        return False
+    try:
+        pygame.mixer.music.load(percorso)
+        pygame.mixer.music.play()
+        print(f"[AUDIO] ▶ {nome_file}")
+        return True
+    except Exception as e:
+        print(f"[AUDIO] Errore {nome_file}: {e}")
+        return False
+
+_w_timers: dict = {}
+
+def warning(nome: str, cooldown_ms: int = 3000) -> bool:
+    ora = pygame.time.get_ticks()
+    if ora - _w_timers.get(nome, 0) >= cooldown_ms:
+        if riproduci_audio(nome):
+            _w_timers[nome] = ora
+            return True
+    return False
+
+# ── Stato interno warning 
+_w_alt_prec:  float  = 0.0
+_w_t_prec_ms: int    = 0
+_w_callouts:  set    = set()
+_w_mode_prec: object = None
+
+def aggiorna_warning(t: dict) -> None:
+    global _w_alt_prec, _w_t_prec_ms, _w_callouts, _w_mode_prec
+
+    # ── Delta-tempo reale 
+    ora_ms       = pygame.time.get_ticks()
+    dt_ms        = max(ora_ms - _w_t_prec_ms, 1) if _w_t_prec_ms else 33
+    _w_t_prec_ms = ora_ms
+    dt_s         = dt_ms / 1000.0
+
+    alt     = t["altitude"]
+    spd     = t["spd_fused"]
+    roll    = abs(t["roll"])
+    in_volo = t["in_flight"]
+    mode    = t["mode"]
+
+    # ── Velocità di discesa
+    if in_volo:
+        v_discesa   = (alt - _w_alt_prec) / dt_s   
+        _w_alt_prec = alt
+    else:
+        v_discesa   = 0.0
+        _w_alt_prec = alt
+
+
+    if alt > ALT_RESET_CALLOUT or not in_volo:
+        _w_callouts.clear()
+
+    if in_volo:
+
+        if alt < ALT_PULL_UP and v_discesa <= VDISCESA_PULL_UP:
+            warning("pull_up.wav", cooldown_ms=CD_PULL_UP)
+
+    
+        elif alt < ALT_TERRAIN_PU and v_discesa <= VDISCESA_TERRAIN_PU:
+            warning("tarrain_terrain_pull_up.wav", cooldown_ms=CD_TERRAIN_PULL_UP)
+
+    
+        elif alt < ALT_TERRAIN and v_discesa <= VDISCESA_TERRAIN:
+            warning("terrain.wav", cooldown_ms=CD_TERRAIN)
+
+        
+        if v_discesa <= VDISCESA_SINK_RATE:
+            warning("sink_rate.wav", cooldown_ms=CD_SINK_RATE)
+
+        
+        if alt < ALT_DONT_SINK and v_discesa <= VDISCESA_DONT_SINK:
+            warning("dont sink.wav", cooldown_ms=CD_DONT_SINK)
+
+    
+        if roll >= ROLL_CRIT:
+            warning("bank_angle.wav", cooldown_ms=CD_BANK_ANGLE)
+
+        
+        if spd < SPD_STALL:
+            warning("stall.wav", cooldown_ms=CD_STALL)
+        elif spd < SPD_AIR_LOW:
+            warning("air_speed_low.wav", cooldown_ms=CD_AIRSPEED_LOW)
+        elif spd < SPD_SLOW:
+            warning("fligh slow.wav", cooldown_ms=CD_FLIGHT_SLOW)
+
+    
+        if spd >= SPD_CRIT:
+            warning("overspeed.wav", cooldown_ms=CD_OVERSPEED)
+
+        #Callout quota 
+        if v_discesa <= VDISCESA_CALLOUT:
+            if "40" not in _w_callouts and CALLOUT_40_LO < alt < CALLOUT_40_HI:
+                _w_callouts.add("40");  riproduci_audio("40.wav")
+            elif "30" not in _w_callouts and CALLOUT_30_LO < alt < CALLOUT_30_HI:
+                _w_callouts.add("30");  riproduci_audio("30.wav")
+            elif "20" not in _w_callouts and CALLOUT_20_LO < alt < CALLOUT_20_HI:
+                _w_callouts.add("20");  riproduci_audio("20.wav")
+            elif "10" not in _w_callouts and CALLOUT_10_LO < alt < CALLOUT_10_HI:
+                _w_callouts.add("10");  riproduci_audio("10.wav")
+
+    if _w_mode_prec is None:
+        _w_mode_prec = mode                    
+    elif mode != _w_mode_prec:
+        if mode in ("MANUALE", "AUTO PID"):
+            riproduci_audio("autopilot.wav")
+        _w_mode_prec = mode
+
+    if t["alarm_failsafe"]:
+        warning("errore.wav", cooldown_ms=CD_ERRORE)
+
+    if t["alarm_crash"]:
+        warning("errore.wav", cooldown_ms=CD_ERRORE)
+
+    if t["alarm_batt_motor"]:
+        warning("errore.wav", cooldown_ms=CD_ERRORE)
+
+    if t["alarm_batt_teensy"]:
+        warning("errore.wav", cooldown_ms=CD_ERRORE)
+
+    if t["alarm_relay"]:
+        warning("errore.wav", cooldown_ms=CD_ERRORE)
+
+    if t["t_teensy"] >= T_TEENSY_CRIT:
+        warning("errore.wav", cooldown_ms=CD_ERRORE)
+
+    if t["t_motor"] >= T_MOTOR_CRIT:
+        warning("errore.wav", cooldown_ms=CD_ERRORE)
+
+    if not (t["ok_isx"] and t["ok_idx"] and t["ok_esx"] and t["ok_edx"]):
+        warning("errore.wav", cooldown_ms=CD_ERRORE)
+
+def main():
     thread_seriale = threading.Thread(target=read_from_serial, daemon=True)
     thread_seriale.start()
 
@@ -533,6 +759,7 @@ def main():
                 pygame.quit()
                 sys.exit()
 
+        aggiorna_warning(T)
         screen.fill(C_BG)
         draw_header(screen, T)
         draw_power_panel(screen, T)

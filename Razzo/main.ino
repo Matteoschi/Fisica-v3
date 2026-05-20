@@ -10,7 +10,7 @@ Adafruit_BNO055 giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
 Adafruit_BMP3XX barometro;
 
 //  TELEMETRIA LORA
-#define TELEMETRIA Serial 
+#define TELEMETRIA Serial4 
 unsigned long timerTelemetria = 0;
 const unsigned long INTERVALLO_TELEMETRIA_MS = 200; 
 
@@ -66,6 +66,10 @@ float errore_passato_yaw = 0.0;
 float PID_output_roll  = 0.0;
 float PID_output_pitch = 0.0;
 float PID_output_yaw   = 0.0;
+const int   IMU_CAMPIONI_TARA = 200;
+float offsetRoll  = 0.0f;
+float offsetPitch = 0.0f;
+float offsetyaw   = 0.0f;
 
 //  FILTRO DI KALMAN (ALTITUDINE E VELOCITÀ)
 float stima_altitudine = 0.0;
@@ -103,83 +107,119 @@ void eseguiCalibrazionePad();
 //  SETUP
 // ============================================================
 void setup() {
-  Serial.begin(115200);
-  Wire.begin();
-  Wire.setClock(400000); 
+    Serial.begin(115200);
+    Wire.begin();
+    Wire.setClock(400000); 
 
-  Serial.println("Inizializzazione LoRa per Telemetria...");
-  TELEMETRIA.begin(9600);
-  Serial.println("Radio LoRa attivata su Serial4.");
+    Serial.println("Inizializzazione LoRa per Telemetria...");
+    TELEMETRIA.begin(9600);
+    Serial.println("Radio LoRa attivata su Serial4.");
 
-  // ── Inizializzazione sensori con retry ──
-  while ((!imuPronto || !baroPronto) && tentativi < MAX_TENTATIVI) {
-      Serial.println("\n--- Controllo Sensori in corso ---");
-      Serial.print("Tentativo numero: ");
-      Serial.println(tentativi + 1);
-      tentativi++;
+    // ── Inizializzazione sensori con retry ──
+    while ((!imuPronto || !baroPronto) && tentativi < MAX_TENTATIVI) {
+        Serial.println("\n--- Controllo Sensori in corso ---");
+        Serial.print("Tentativo numero: ");
+        Serial.println(tentativi + 1);
+        tentativi++;
 
-      if (!imuPronto) {
-          Serial.print("IMU (BNO055)........ ");
-          if (giroscopio.begin()) {
-              giroscopio.setExtCrystalUse(true);
-              imuPronto = true;
-              Serial.println("OK!");
-          } else {
-              Serial.println("FALLITO! (Controlla cavi I2C)");
-          }
-      }
+        if (!imuPronto) {
+        Serial.print("[ ] IMU BNO055 ................. ");
+        if (giroscopio.begin()) {
+            giroscopio.setExtCrystalUse(true);
+            Serial.println("OK");
 
-      if (!baroPronto) {
-          Serial.print("Barometro (BMP390).. ");
-          if (barometro.begin_I2C()) {
-              barometro.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
-              barometro.setPressureOversampling(BMP3_OVERSAMPLING_32X);
-              barometro.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
-              barometro.setOutputDataRate(BMP3_ODR_50_HZ);
-              baroPronto = true;
-              Serial.println("OK!");
-          } else {
-              Serial.println("FALLITO! (Controlla cavi I2C)");
-          }
-      }
-  }
+            // 1. calibrazione interna giroscopio
+            Serial.print("   Calibrazione interna (non muovere)");
+            uint8_t sys, gyro, accel, mag;
+            unsigned long timeout = millis();
+            do {
+                giroscopio.getCalibration(&sys, &gyro, &accel, &mag);
+                Serial.print(".");
+                delay(100);
+                if (millis() - timeout > 10000) {
+                    Serial.println(" timeout, continuo");
+                    break;
+                }
+            } while (gyro < 2);
 
-  // ── Blocco in caso di errore critico ──
-  if (!imuPronto || !baroPronto) {
-      Serial.println("\nERRORE CRITICO: AVVIO BLOCCATO. Controlla i sensori.");
-      while (1) {
-          digitalWrite(PIN_LED_ARMATO, HIGH); delay(100);
-          digitalWrite(PIN_LED_ARMATO, LOW);  delay(100);
-      }
-  }
+            // 2. tara
+            Serial.println("\n   Tara offset in corso...");
+            double sommaRoll  = 0.0;
+            double sommaPitch = 0.0;
+            double sommaYaw   = 0.0;
+            for (int i = 0; i < IMU_CAMPIONI_TARA; i++) {
+                sensors_event_t ev;
+                giroscopio.getEvent(&ev);
+                sommaRoll  += ev.orientation.z;
+                sommaPitch += ev.orientation.y;
+                double yaw = ev.orientation.x;
+                delay(10);
+            }
+            offsetRoll  = (float)(sommaRoll  / IMU_CAMPIONI_TARA);
+            offsetPitch = (float)(sommaPitch / IMU_CAMPIONI_TARA);
+            offsetyaw   = (float)(sommaYaw   / IMU_CAMPIONI_TARA);
+
+            imuPronto = true; 
+       
+        } else {
+            Serial.println("ERRORE (cavi I2C?)");
+       
+        }
+        } else {
+            Serial.println("[OK] IMU BNO055");
+        }
+
+        if (!baroPronto) {
+            Serial.print("Barometro (BMP390).. ");
+            if (barometro.begin_I2C()) {
+                barometro.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+                barometro.setPressureOversampling(BMP3_OVERSAMPLING_32X);
+                barometro.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+                barometro.setOutputDataRate(BMP3_ODR_50_HZ);
+                baroPronto = true;
+                Serial.println("OK!");
+            } else {
+                Serial.println("FALLITO! (Controlla cavi I2C)");
+            }
+        }
+    }
+
+    // ── Blocco in caso di errore critico ──
+    if (!imuPronto || !baroPronto) {
+        Serial.println("\nERRORE CRITICO: AVVIO BLOCCATO. Controlla i sensori.");
+        while (1) {
+            digitalWrite(PIN_LED_ARMATO, HIGH); delay(100);
+            digitalWrite(PIN_LED_ARMATO, LOW);  delay(100);
+        }
+    }
 
 
-  // ── Inizializzazione servi ──
-  Serial.println("Inizializzazione Servomotori...");
-  servo_SX.attach(pinSX);
-  servo_DX.attach(pinDX);
-  servo_Avanti.attach(pinAvanti);
-  servo_Dietro.attach(pinDietro);
-  servo_Paracadute.attach(pinParacadute);
+    // ── Inizializzazione servi ──
+    Serial.println("Inizializzazione Servomotori...");
+    servo_SX.attach(pinSX);
+    servo_DX.attach(pinDX);
+    servo_Avanti.attach(pinAvanti);
+    servo_Dietro.attach(pinDietro);
+    servo_Paracadute.attach(pinParacadute);
 
-  servo_SX.write(CENTRO);
-  servo_DX.write(CENTRO);
-  servo_Avanti.write(CENTRO);
-  servo_Dietro.write(CENTRO);
-  servo_Paracadute.write(ANGOLO_SERVO_PARACADUTE_CHIUSO);
+    servo_SX.write(CENTRO);
+    servo_DX.write(CENTRO);
+    servo_Avanti.write(CENTRO);
+    servo_Dietro.write(CENTRO);
+    servo_Paracadute.write(ANGOLO_SERVO_PARACADUTE_CHIUSO);
 
-  // ── LED di conferma ──
-  pinMode(PIN_LED_ARMATO, OUTPUT);
-  pinMode(PIN_LED_VERDE_DISARMATO, OUTPUT);
-  digitalWrite(PIN_LED_ARMATO, HIGH);
-  digitalWrite(PIN_LED_VERDE_DISARMATO, HIGH);
-  delay(1000);
-  digitalWrite(PIN_LED_ARMATO, LOW);
-  digitalWrite(PIN_LED_VERDE_DISARMATO, LOW);
+    // ── LED di conferma ──
+    pinMode(PIN_LED_ARMATO, OUTPUT);
+    pinMode(PIN_LED_VERDE_DISARMATO, OUTPUT);
+    digitalWrite(PIN_LED_ARMATO, HIGH);
+    digitalWrite(PIN_LED_VERDE_DISARMATO, HIGH);
+    delay(1000);
+    digitalWrite(PIN_LED_ARMATO, LOW);
+    digitalWrite(PIN_LED_VERDE_DISARMATO, LOW);
 
-  tempoPassato_loop = millis();
-  Serial.println("=== HARDWARE OK. IN ATTESA DI COMANDO DI CALIBRAZIONE ('K') ===");
-  delay(1000);
+    tempoPassato_loop = millis();
+    Serial.println("=== HARDWARE OK. IN ATTESA DI COMANDO DI CALIBRAZIONE ('K') ===");
+    delay(1000);
 }
 
 void loop() {
@@ -202,9 +242,9 @@ void loop() {
     // ── 2. LETTURA IMU ──
     sensors_event_t event_ori;
     giroscopio.getEvent(&event_ori, Adafruit_BNO055::VECTOR_EULER);
-    float angoloPitch = event_ori.orientation.y;
-    float angoloRoll  = event_ori.orientation.z;
-    float angoloYaw   = event_ori.orientation.x;
+    float angoloPitch = event_ori.orientation.y - offsetPitch;
+    float angoloRoll  = event_ori.orientation.z - offsetRoll;
+    float angoloYaw   = event_ori.orientation.x - offsetyaw;
 
     float pitch_rad = angoloPitch * (PI / 180.0);
     float roll_rad  = angoloRoll * (PI / 180.0);
@@ -565,9 +605,9 @@ void eseguiCalibrazionePad() {
     Serial.print("\n Calibazione assetto di partenza");
     sensors_event_t event;
     giroscopio.getEvent(&event);
-    posizione_partenza_roll  = event.orientation.z;
-    posizione_partenza_pitch = event.orientation.y;
-    posizione_partenza_yaw   = event.orientation.x;
+    posizione_partenza_roll  = event.orientation.z - offsetRoll;
+    posizione_partenza_pitch = event.orientation.y - offsetPitch;
+    posizione_partenza_yaw   = event.orientation.x - offsetyaw;
 
     digitalWrite(PIN_LED_VERDE_DISARMATO, HIGH);
     digitalWrite(PIN_LED_ARMATO, HIGH);

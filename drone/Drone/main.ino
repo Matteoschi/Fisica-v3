@@ -41,7 +41,7 @@ bool pacchettoPerso = false;
 //  PITOT (VELOCITÀ ARIA)
 // ============================================================
 const int   PIN_ARIA  = A0;
-const float DENSITA_ARIA = 1.225;  // kg/m³
+const float DENSITA_ARIA = 1.225;  
 float VALORE_ZERO  = 0.0;    
 const float FATTORE_CONVERSIONE_PA = 3.22;
 // ============================================================
@@ -84,6 +84,8 @@ const int GAS_MASSIMO = 130;
 const float VELOCITA_CROCIERA  = 60.0;  
 const float VELOCITA_AVVICINAMENTO= 45.0;   
 const float DISTANZA_FRENATA = 150.0;  
+const int   IMU_CAMPIONI_TARA = 200;
+
 // ============================================================
 //  NAVIGAZIONE
 // ============================================================
@@ -102,7 +104,9 @@ float lonPrecedente= 0.0;
 float velocitaGPS = 0.0;
 float alpha_vel= 0.7; 
 float Velocita_stimata_Ms = 0.0;
-
+float offsetRoll  = 0.0f;
+float offsetPitch = 0.0f;
+float offsetyaw   = 0.0f;
 // ============================================================
 //  PID — GUADAGNI
 // ============================================================
@@ -147,7 +151,6 @@ const int PIN_LED_VERDE_GPS = 3; // GPS Fix e settaggio pitot
 const int PIN_LED_BLU_PID  = 4; // Modalità AUTO pid e settaggio barometro
 const int PIN_BUZZER = 5;
 const int PIN_RELE = 20;
-
 
 // ============================================================
 //  FLAGS STATO SISTEMA
@@ -241,9 +244,7 @@ void setup()
     tone(PIN_BUZZER, 1600, 150); 
     delay(300);
 
-    Serial.println("\n=========================================");
-    Serial.println("     SISTEMA DRONE — AVVIO IN CORSO     ");
-    Serial.println("=========================================");
+    Serial.println("     SISTEMA DRONE — AVVIO IN CORSO     ");;
 
     ricevente.begin();
     TELEMETRIA.begin(9600);
@@ -258,21 +259,60 @@ void setup()
         Serial.print  (" / ");
         Serial.println(MAX_TENTATIVI);
         Serial.println("-----------------------------------------");
-
         // 1. IMU 
         if (!imuPronto) {
-            Serial.print("[ ] IMU BNO055 ............. ");
-            if (giroscopio.begin()) {
-                giroscopio.setExtCrystalUse(true);
-                imuPronto = true;
-                Serial.println("OK");
-                segnalaOK();
-            } else {
-                Serial.println("ERRORE (cavi I2C?)");
-                segnalaErrore();
+        Serial.print("[ ] IMU BNO055 ................. ");
+        if (giroscopio.begin()) {
+            giroscopio.setExtCrystalUse(true);
+            Serial.println("OK");
+
+            // 1. calibrazione interna giroscopio
+            Serial.print("   Calibrazione interna (non muovere)");
+            uint8_t sys, gyro, accel, mag;
+            unsigned long timeout = millis();
+            do {
+                giroscopio.getCalibration(&sys, &gyro, &accel, &mag);
+                Serial.print(".");
+                delay(100);
+                if (millis() - timeout > 10000) {
+                    Serial.println(" timeout, continuo");
+                    break;
+                }
+            } while (gyro < 2);
+
+            // 2. tara
+            Serial.println("\n   Tara offset in corso...");
+            double sommaRoll  = 0.0;
+            double sommaPitch = 0.0;
+            double sommaYaw   = 0.0;
+            for (int i = 0; i < IMU_CAMPIONI_TARA; i++) {
+                sensors_event_t ev;
+                giroscopio.getEvent(&ev);
+                sommaRoll  += ev.orientation.z;
+                sommaPitch += ev.orientation.y;
+                double yaw = ev.orientation.x;
+                delay(10);
             }
+            offsetRoll  = (float)(sommaRoll  / IMU_CAMPIONI_TARA);
+            offsetPitch = (float)(sommaPitch / IMU_CAMPIONI_TARA);
+            offsetyaw   = (float)(sommaYaw   / IMU_CAMPIONI_TARA);
+
+            imuPronto = true; 
+            segnalaOK();
+            Serial.print(" imu offsets: roll= ");
+            Serial.print(offsetRoll, 2);
+            Serial.print(" ; pitch= ");
+            Serial.print(offsetPitch, 2);
+            Serial.print(" ; yaw= ");
+            Serial.println(offsetyaw, 2);
+
+
         } else {
-            Serial.println("[OK] IMU BNO055");
+            Serial.println("\n ERRORE (cavi I2C?)");
+            segnalaErrore();
+        }
+        } else {
+            Serial.println(" \n [OK] IMU BNO055");
         }
 
         //2. BAROMETRO 
@@ -341,7 +381,6 @@ void setup()
 
         // 4. INA219 
         Voltaggio = true;
-
         Serial.print("[ ] INA219 Batteria motore........ ");
         if (sensoreMotore.begin()) {
             Serial.println("OK");
@@ -414,29 +453,31 @@ void setup()
     }
     
     //  TUTTO OK — INIT SERVO
-    Serial.println("\n=========================================");
     Serial.println("     TUTTI I SENSORI OPERATIVI          ");
-    Serial.println("=========================================");
     Serial.println("Inizializzazione servomotori...");
 
     servoInternoSX.attach(pinIntSX);
     servoInternoDX.attach(pinIntDX);
     servoEsternoSX.attach(pinEstSX);
     servoEsternoDX.attach(pinEstDX);
+    Serial.println("Servomotori pronti [OK] ");
     motore.attach(pinMotore);
+    Serial.println("GAS [OK] ");
+    
 
     servoInternoSX.write(CENTRO_SERVO);
     servoInternoDX.write(CENTRO_SERVO);
     servoEsternoSX.write(CENTRO_SERVO);
     servoEsternoDX.write(CENTRO_SERVO);
     motore.write(GAS_MINIMO);
-    Serial.println("Servomotori pronti — flap neutri, gas minimo");
+    Serial.println("Settati flap neutri e gas al minimo");
 
     // Jingle avvio riuscito
     tone(PIN_BUZZER, 800,  120); delay(170);
     tone(PIN_BUZZER, 1200, 120); delay(170);
     tone(PIN_BUZZER, 1800, 200); delay(350);
 
+    Serial.println("Verifica oculare luci di stato...");
     digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
     digitalWrite(PIN_LED_VERDE_GPS,HIGH);
     digitalWrite(PIN_LED_BLU_PID, HIGH);
@@ -450,9 +491,7 @@ void setup()
     delay(500);
 }
 
-// ============================================================
-//  LOOP
-// ============================================================
+
 void loop()
 {
     gestisciAlimentazione();
@@ -470,9 +509,9 @@ void loop()
     // 3. lettura giroscopio (IMU)
     sensors_event_t event;
     giroscopio.getEvent(&event);
-    float angoloPitch = event.orientation.y;
-    float angoloRoll  = event.orientation.z;
-    float angoloYaw   = event.orientation.x;
+    float angoloPitch = event.orientation.y - offsetPitch;
+    float angoloRoll  = event.orientation.z - offsetRoll;
+    float angoloYaw   = event.orientation.x - offsetyaw;
 
     // 4. aggiorna navigazione
     aggiornaNavigazione(angoloYaw);
@@ -653,7 +692,7 @@ void applicaMixer4Servi(int pitch, int roll)
         return;
     }
 
-    // ── Attach/detach automatico ──────────────────────────
+    // ── Attach/detach automatico 
     if (interniAttivi != statoPrecedenteInterni) {
         if (interniAttivi) {
             servoInternoSX.attach(pinIntSX);
@@ -680,13 +719,13 @@ void applicaMixer4Servi(int pitch, int roll)
         statoPrecedenteEsterni = esterniAttivi;
     }
 
-    // ── Limiti di sicurezza ───────────────────────────────
+    // ── Limiti di sicurezza 
     posIntSX = constrain(posIntSX, 45, 135);
     posIntDX = constrain(posIntDX, 45, 135);
     posEstSX = constrain(posEstSX, 45, 135);
     posEstDX = constrain(posEstDX, 45, 135);
 
-    // ── Comando fisico ────────────────────────────────────
+    // ── Comando fisico 
     if (interniAttivi) {
         servoInternoSX.write(posIntSX);
         servoInternoDX.write(posIntDX);
@@ -716,9 +755,8 @@ void aggiornaNavigazione(float angoloYaw)
         }else if (global_errore_rotta < -180.0) {
             global_errore_rotta += 360.0;
         }
-
         // L1 Calcola l'accelerazione laterale necessaria per curvare  verso la rotta: a_lat = 2*V^2/l1 *sin(eta)
-        Velocita_stimata_Ms = max(Velocita_stimata_Ms, 1.0f); // Mai sotto 1 m/s nei calcoli
+        Velocita_stimata_Ms = max(Velocita_stimata_Ms, 1.0f); // Evita divisione per zero e accelera con più decisione a basse velocità
         float L1 = max(Velocita_stimata_Ms * 4.0f, 1.0f); 
         float eta = radians(global_errore_rotta);
         float a_lat = (2 * Velocita_stimata_Ms * Velocita_stimata_Ms / L1) * sin(eta);
@@ -797,9 +835,6 @@ void gestisci_allarmi() {
     }
 }
 
-// ============================================================
-//  INVIO TELEMETRIA COMPLETA (Formato CSV)
-// ============================================================
 // ============================================================
 //  INVIO TELEMETRIA COMPLETA (Formato CSV)
 // ============================================================
@@ -1008,7 +1043,7 @@ void gestisciSchianto() {
         return; 
     }
 
-    // 2. Controllo decollo (Usa la nuova variabile globale)
+    // 2. Controllo decollo 
     if (Velocita_stimata_Ms > 5.0 || global_altitudineDalSuolo > 5.0) {
         droneInVolo = true;
     }
