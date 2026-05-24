@@ -114,6 +114,8 @@ SAT_MIN = 5           # < soglia → ROSSO
 # ── Throttle 
 THR_WARN = 0.8        # >= soglia → barra GIALLA
 
+GAS_MINIMO = 25        
+GAS_MASSIMO = 130       
 
 # ── Orizzonte artificiale 
 PFD_CX, PFD_CY, PFD_R = W // 2, 245, 142
@@ -287,7 +289,8 @@ def parse_telemetry(line):
         T["pid_pitch"]= float(f[23])
         T["pid_roll"] = float(f[24])
         # outGas in µs (range tipico 1000-2000); normalizzato 0.0-1.0 per la barra
-        T["pid_gas"] = clamp((float(f[25]) - 1000.0) / 1000.0, 0.0, 1.0)
+        T["pid_gas"] = clamp((float(f[25]) - GAS_MINIMO) / (GAS_MASSIMO - GAS_MINIMO), 0.0, 1.0)
+# dove GAS_MINIMO = 25, GAS_MASSIMO = 130 1.0)
         T["throttle"]  = T["pid_gas"]
 
         # ── Posizione fisica servi [°] ───────────────────────────────────

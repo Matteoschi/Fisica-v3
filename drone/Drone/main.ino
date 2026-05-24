@@ -8,9 +8,7 @@
 #include <Adafruit_INA219.h>
 #include <Adafruit_BMP3XX.h>
 
-// ============================================================
 //  SENSORI
-// ============================================================
 TinyGPSPlus gps;
 Adafruit_BNO055  giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
 Adafruit_BMP3XX barometro;
@@ -20,33 +18,28 @@ const int PIN_T_teensy=A2;
 float Global_Temperatura_motore = 0.0;
 float temp_aria_barometro = 0.0; 
 
-// ============================================================
 //  CONFIGURAZIONE GPS
-// ============================================================
 #define GPS_SERIAL  Serial1
 #define BAUD_RATE_GPS 9600
-// ============================================================
+#define BAUD_RATE_LORA 57600
+
 //  TELEMETRIA LORA 
-// ============================================================
 #define TELEMETRIA Serial4         
 unsigned long timerTelemetria = 0;
-// ============================================================
+
 //  RICEVENTE SBUS (FrSky)
-// ============================================================
 SBUS   ricevente(Serial3);
 uint16_t canaliRC[16];
 bool failsafe   = false;
 bool pacchettoPerso = false;
-// ============================================================
+
 //  PITOT (VELOCITÀ ARIA)
-// ============================================================
 const int   PIN_ARIA  = A0;
 const float DENSITA_ARIA = 1.225;  
 float VALORE_ZERO  = 0.0;    
 const float FATTORE_CONVERSIONE_PA = 3.22;
-// ============================================================
+
 //  SERVO
-// ============================================================
 const int pinIntSX  = 6;
 const int pinIntDX  = 7;
 const int pinEstSX  = 8;
@@ -58,37 +51,35 @@ Servo servoInternoDX;  // flap interno destro    (pitch)
 Servo servoEsternoSX;  // flap esterno sinistro  (pitch + roll)
 Servo servoEsternoDX;  // flap esterno destro    (pitch + roll)
 Servo motore;
-// ============================================================
+
 //  SENSORE CORRENTE
-// ============================================================
 Adafruit_INA219 sensoreMotore(0x40);  
 Adafruit_INA219 sensoreIntSX(0x41);
 Adafruit_INA219 sensoreIntDX(0x42);
 Adafruit_INA219 sensoreEstSX(0x43);
 Adafruit_INA219 sensoreEstDX(0x44);
 Adafruit_INA219 sensoreTeensy(0x45); 
-// ============================================================
+
 //  COSTANTI
-// ============================================================
-const int VALORE_BATT_MOTORE_BASSA = 11.8;
-const int VALORE_BATT_TEENSY_BASSA = 4.9;
-const int SOGLIA_G_SCHIANTO=25;
+const float VALORE_BATT_MOTORE_BASSA = 11.8f;
+const float VALORE_BATT_TEENSY_BASSA = 4.9f;
+const int SOGLIA_G_SCHIANTO=50;
 const int CENTRO_SERVO  = 90;
 const int MAX_ROLL = 35;
 const int MAX_PITCH  = 20;
 const int ALTEZZA_MAX = 120;
 const int ALTEZZA_MIN = 10;
-const int GAS_MINIMO = 25;
-const int GAS_CROCIERA= 70;   
-const int GAS_MASSIMO = 130;  
+const int GAS_MINIMO = 1000;
+const int GAS_MASSIMO = 2000;  
+const int GAS_CROCIERA= 1450;   
 const float VELOCITA_CROCIERA  = 60.0;  
 const float VELOCITA_AVVICINAMENTO= 45.0;   
 const float DISTANZA_FRENATA = 150.0;  
 const int   IMU_CAMPIONI_TARA = 200;
 
-// ============================================================
+const int SEMPLE_VALORI_SCHIANTO=3;
+
 //  NAVIGAZIONE
-// ============================================================
 const double TARGET_LAT = 41.902782;
 const double TARGET_LON = 12.496366;
 const float  ALTITUDINE_TARGET = 40.0;
@@ -99,17 +90,15 @@ float global_distanzaDalTarget = 0.0;
 float global_rottaVersoTarget = 0.0;
 float global_errore_rotta  = 0.0;
 float global_altitudineDalSuolo = 0.0;
-float latPrecedente = 0.0;
-float lonPrecedente= 0.0;
 float velocitaGPS = 0.0;
+float Velocita_pitot_Ms = 0.0;
 float alpha_vel= 0.7; 
 float Velocita_stimata_Ms = 0.0;
 float offsetRoll  = 0.0f;
 float offsetPitch = 0.0f;
 float offsetyaw   = 0.0f;
-// ============================================================
+
 //  PID — GUADAGNI
-// ============================================================
 float Kp_vel = 1.5;
 float Ki_vel = 0.1;
 float Kd_vel = 0.5;
@@ -128,9 +117,7 @@ float Kd_alt = 0.2;
 
 unsigned long tempoPassatoPID = 0;
 
-// ============================================================
 //  VARIABILI DI STATO PID GLOBALI
-// ============================================================
 float pid_sommaErroriAlt   = 0.0;
 float pid_errorePassatoAlt = 0.0;
 
@@ -143,45 +130,48 @@ float pid_errorePassatoRoll = 0.0;
 float pid_sommaErroriVel   = 0.0;
 float pid_errorePassatoVel = 0.0;
 
-// ============================================================
+
+const unsigned long TEMPO_DECOLLO_SICURO_MS = 1500;
+const float SOGLIA_VELO_DECOLLO_MS = 5.0;
+const float SOGLIA_ALT_DECOLLO_M = 5.0;
+unsigned long timestampDecollo = 0;
+static int contatoreImpatto = 0;
+
 //  LED DI STATO E ALLARMI
-// ============================================================
 const int PIN_LED_ROSSO_ALARM = 2; // Allarmi come moduli mancanti / Batteria
 const int PIN_LED_VERDE_GPS = 3; // GPS Fix e settaggio pitot
 const int PIN_LED_BLU_PID  = 4; // Modalità AUTO pid e settaggio barometro
 const int PIN_BUZZER = 5;
 const int PIN_RELE = 20;
 
-// ============================================================
 //  FLAGS STATO SISTEMA
-// ============================================================
-bool imuPronto = false;
-bool baroPronto= false;
-bool pitotCalibrato = false;
-bool Voltaggio = true;
-int  tentativi = 0;
+bool imuPronto       = false;
+bool baroPronto      = false;
+bool pitotCalibrato  = false;
+bool Voltaggio       = true;
+int  tentativi       = 0;
 const int MAX_TENTATIVI = 3;
 
-bool statoSchiantoRilevato = false; 
-bool droneInVolo = false;
-// batteria
-bool  batteriaBassa_motore= false;
-bool  batteriaBassa_teensy= false;
-bool relèAttivato = false;
+bool servo_sicurezza         = true;
+bool alimentazione_sicurezza = true;   
+bool schianto_sicurezza      = true;
 
-// Stati di salute dei servi
-bool estSX_Ok = true;
-bool estDX_Ok = true;
-bool intSX_Ok = true;
-bool intDX_Ok = true;
-bool interni_staccati = false;
-int  global_modalitaVolo = 1;
-bool statoPrecedenteInterni = true;
-bool statoPrecedenteEsterni = true;
+bool statoSchiantoRilevato   = false;
+bool droneInVolo             = false;
+bool schiantoBloccato        = false;
 
-// ============================================================
+bool batteriaBassa_motore    = false;
+bool batteriaBassa_teensy    = false;
+bool relèAttivato            = false;
+
+bool estSX_Ok = true, estDX_Ok = true;
+bool intSX_Ok = true, intDX_Ok = true;
+bool interni_staccati          = false;
+int  global_modalitaVolo       = 1;
+bool statoPrecedenteInterni    = true;
+bool statoPrecedenteEsterni    = true;
+
 //  PROTOTIPI
-// ============================================================
 void applicaMixer4Servi(int pitch, int roll);
 void aggiornaNavigazione(float angoloYaw);
 void diagnosticaServi();
@@ -193,6 +183,11 @@ void segnalaErrore();
 void segnalaCalibrazione(int pin_led);
 void gestisciSchianto();
 void gestisciAlimentazione();
+void verifica_drone_in_volo();
+void inizializzazione_servo();
+void inizializzazione_motore();
+void comandi_da_terra();                       
+void elaboraComando(const String& cmd);        
 
 void segnalaOK() {
     digitalWrite(PIN_LED_VERDE_GPS, HIGH);
@@ -247,7 +242,7 @@ void setup()
     Serial.println("     SISTEMA DRONE — AVVIO IN CORSO     ");;
 
     ricevente.begin();
-    TELEMETRIA.begin(9600);
+    TELEMETRIA.begin(BAUD_RATE_LORA);
     GPS_SERIAL.begin(BAUD_RATE_GPS);
 
     // INIZIALIZZAZIONE SENSORI
@@ -265,7 +260,6 @@ void setup()
         if (giroscopio.begin()) {
             giroscopio.setExtCrystalUse(true);
             Serial.println("OK");
-
             // 1. calibrazione interna giroscopio
             Serial.print("   Calibrazione interna (non muovere)");
             uint8_t sys, gyro, accel, mag;
@@ -290,7 +284,7 @@ void setup()
                 giroscopio.getEvent(&ev);
                 sommaRoll  += ev.orientation.z;
                 sommaPitch += ev.orientation.y;
-                double yaw = ev.orientation.x;
+                sommaYaw   += ev.orientation.x;
                 delay(10);
             }
             offsetRoll  = (float)(sommaRoll  / IMU_CAMPIONI_TARA);
@@ -325,21 +319,50 @@ void setup()
                 barometro.setOutputDataRate(BMP3_ODR_50_HZ);
                 delay(100);
 
+                // --- LETTURE A VUOTO per scartare ---
+                for(int j=0; j<3; j++) {
+                    barometro.readAltitude(1013.25);
+                    delay(25);
+                }
                 float sommaAlt = 0.0;
+                bool erroreCalibrazione = false;
+
                 for (int i = 0; i < 20; i++) {
                     segnalaCalibrazione(PIN_LED_BLU_PID);
-                    sommaAlt += barometro.readAltitude(1013.25);
-                    delay(50);
+                    
+                    // LETTURA SINGOLA OTTIMIZZATA
+                    float altIstantanea = barometro.readAltitude(1013.25);
+                    
+                    // VALIDAZIONE HARDWARE (Limiti ASL estremi)
+                    if (altIstantanea < -500.0 || altIstantanea > 8000.0) {
+                        Serial.println("\n ERRORE: Lettura barometrica impossibile");
+                        Serial.print(" Altitudine letta: ");
+                        Serial.print(altIstantanea);
+                        Serial.println(" m");
+                        
+                        digitalWrite(PIN_LED_BLU_PID, LOW);
+                        erroreCalibrazione = true;
+                        break; 
+                    }
+                    sommaAlt += altIstantanea;
+                    delay(25);
                 }
-                digitalWrite(PIN_LED_BLU_PID,LOW);
-                digitalWrite(PIN_BUZZER,LOW);
+                if (erroreCalibrazione) {
+                    segnalaErrore();
+                    continue; 
+                }
+
+                digitalWrite(PIN_LED_BLU_PID, LOW);
+                digitalWrite(PIN_BUZZER, LOW);
 
                 baroPronto = true;
                 global_altitudineDiPartenza = sommaAlt / 20.0;
-                Serial.print("OK (tara: ");
+                
+                Serial.print("OK (tara ASL: ");
                 Serial.print(global_altitudineDiPartenza, 1);
                 Serial.println(" m)");
                 segnalaOK();
+                
             } else {
                 Serial.println("ERRORE (cavi I2C?)");
                 segnalaErrore();
@@ -456,20 +479,8 @@ void setup()
     Serial.println("     TUTTI I SENSORI OPERATIVI          ");
     Serial.println("Inizializzazione servomotori...");
 
-    servoInternoSX.attach(pinIntSX);
-    servoInternoDX.attach(pinIntDX);
-    servoEsternoSX.attach(pinEstSX);
-    servoEsternoDX.attach(pinEstDX);
-    Serial.println("Servomotori pronti [OK] ");
-    motore.attach(pinMotore);
-    Serial.println("GAS [OK] ");
-    
-
-    servoInternoSX.write(CENTRO_SERVO);
-    servoInternoDX.write(CENTRO_SERVO);
-    servoEsternoSX.write(CENTRO_SERVO);
-    servoEsternoDX.write(CENTRO_SERVO);
-    motore.write(GAS_MINIMO);
+    inizializzazione_servo();
+    inizializzazione_motore();
     Serial.println("Settati flap neutri e gas al minimo");
 
     // Jingle avvio riuscito
@@ -481,7 +492,7 @@ void setup()
     digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
     digitalWrite(PIN_LED_VERDE_GPS,HIGH);
     digitalWrite(PIN_LED_BLU_PID, HIGH);
-    delay(800);
+    delay(1000);
     digitalWrite(PIN_LED_ROSSO_ALARM,LOW);
     digitalWrite(PIN_LED_VERDE_GPS,LOW);
     digitalWrite(PIN_LED_BLU_PID,LOW);
@@ -491,11 +502,28 @@ void setup()
     delay(500);
 }
 
+void  inizializzazione_servo(){
+    servoInternoSX.attach(pinIntSX);
+    servoInternoDX.attach(pinIntDX);
+    servoEsternoSX.attach(pinEstSX);
+    servoEsternoDX.attach(pinEstDX);
+    servoInternoSX.write(CENTRO_SERVO);
+    servoInternoDX.write(CENTRO_SERVO);
+    servoEsternoSX.write(CENTRO_SERVO);
+    servoEsternoDX.write(CENTRO_SERVO);
+}
+
+void inizializzazione_motore(){
+    motore.attach(pinMotore);
+    motore.writeMicroseconds(GAS_MINIMO);
+}
 
 void loop()
 {
+    comandi_da_terra(); 
     gestisciAlimentazione();
     gestisciSchianto();
+    verifica_drone_in_volo();
 
     // 1. lettura GPS
     while (GPS_SERIAL.available() > 0) {
@@ -503,7 +531,6 @@ void loop()
     }
 
     // 2. monitoraggio voltaggio teensy e motore
-
     diagnosticaServi();
 
     // 3. lettura giroscopio (IMU)
@@ -511,7 +538,7 @@ void loop()
     giroscopio.getEvent(&event);
     float angoloPitch = event.orientation.y - offsetPitch;
     float angoloRoll  = event.orientation.z - offsetRoll;
-    float angoloYaw   = event.orientation.x - offsetyaw;
+    float angoloYaw   = event.orientation.x;
 
     // 4. aggiorna navigazione
     aggiornaNavigazione(angoloYaw);
@@ -526,7 +553,6 @@ void loop()
     Global_Temperatura_motore = (voltaggio_Sensore_motore - 0.5) * 100.0;
 
     // 7. pitot – lettura velocità aria
-    float Velocita_pitot_Ms=0.0;
     int lettura_dal_pin_pitot= analogRead(PIN_ARIA);
     lettura_dal_pin_pitot = constrain(lettura_dal_pin_pitot, 0, 1023);
     float differenza= (float)lettura_dal_pin_pitot - VALORE_ZERO;
@@ -540,14 +566,18 @@ void loop()
 
     //8. gps calcolo velocità (groundspeed)
     float velocita_gps_Ms = 0.0;
-    if (gps.speed.isValid()) {
+    bool gpsSpeedValido = gps.speed.isValid();
+    if (gpsSpeedValido) {
         velocita_gps_Ms = gps.speed.kmph() / 3.6;
-        if (latPrecedente == 0.0 && lonPrecedente == 0.0) {
-            latPrecedente = gps.location.lat();
-            lonPrecedente = gps.location.lng();
-        }
     }
-    Velocita_stimata_Ms = (alpha_vel * Velocita_pitot_Ms) + ((1.0 - alpha_vel) * velocita_gps_Ms);
+
+    if (gpsSpeedValido && Velocita_pitot_Ms > 0.1f) {
+        Velocita_stimata_Ms = (alpha_vel * Velocita_pitot_Ms) + ((1.0 - alpha_vel) * velocita_gps_Ms);
+    } else if (gpsSpeedValido) {
+        Velocita_stimata_Ms = velocita_gps_Ms;
+    } else {
+        Velocita_stimata_Ms = Velocita_pitot_Ms; 
+    }
 
     // 9. PREPARAZIONE DATI MOTORE
     float targetVelocita = 0.0;
@@ -557,19 +587,37 @@ void loop()
         gasDiBase= GAS_CROCIERA;
     } else {
         targetVelocita = VELOCITA_AVVICINAMENTO;
-        gasDiBase= 45;
+        gasDiBase= 1250;
     }
 
     int correzionePitch  = 0;
     int correzioneRoll   = 0;
-    int comandoGasFinale = 0;
+    int comandoGasFinale = GAS_MINIMO;
 
     // 1 = Manuale, 2 = Auto, 3 = Failsafe
     if (ricevente.read(&canaliRC[0], &failsafe, &pacchettoPerso)) {
+        if (statoSchiantoRilevato && canaliRC[4] < 992) {
+            statoSchiantoRilevato = false;
+            schiantoBloccato = false;
+            droneInVolo = false;           
+            inizializzazione_servo();
+
+            statoPrecedenteInterni = true;
+            statoPrecedenteEsterni = true;
+
+            noTone(PIN_BUZZER); 
+            tone(PIN_BUZZER, 1000, 100); 
+            delay(150);
+            tone(PIN_BUZZER, 1500, 100);
+            Serial.println("!!! SBLOCCO EMERGENZA ESEGUITO DA RADIO !!! Servi Riarmati e centrati.");
+        }
+
         if (canaliRC[4] < 992) {
             global_modalitaVolo = 1; 
         } else {
-            global_modalitaVolo = 2; 
+            if(droneInVolo  && statoSchiantoRilevato == false){
+                global_modalitaVolo = 2; 
+            }
         }
     }
     
@@ -584,19 +632,6 @@ void loop()
     // 10. RESET PID AL CAMBIO DI MODALITÀ 
     static int modalitaPrecedente = 1;
     if (statoAttuale != modalitaPrecedente) {
-
-        if (statoSchiantoRilevato == true) {
-            statoSchiantoRilevato = false; 
-            droneInVolo = false;           
-    
-            noTone(PIN_BUZZER); 
-        
-            tone(PIN_BUZZER, 1000, 100); delay(150);
-            tone(PIN_BUZZER, 1500, 100);
-            
-            Serial.println("!!! SBLOCCO EMERGENZA ESEGUITO DA RADIO !!! Pronto al riarmo.");
-        }
-
         pid_sommaErroriAlt  = 0.0;  pid_errorePassatoAlt = 0.0;
         pid_sommaErroriPitch= 0.0;  pid_errorePassatoPitch= 0.0;
         pid_sommaErroriRoll = 0.0;  pid_errorePassatoRoll = 0.0;
@@ -609,17 +644,16 @@ void loop()
         modalitaPrecedente = statoAttuale;      
     }
 
-    if (global_modalitaVolo == 1 && !failsafe) {
+    if (!schiantoBloccato && global_modalitaVolo == 1 && !failsafe) {
         // Gas: da 172-1811 a GAS_MINIMO-GAS_MASSIMO (limiti meccanici motore)
         comandoGasFinale = constrain(map(canaliRC[2], 172, 1811, GAS_MINIMO, GAS_MASSIMO), GAS_MINIMO, GAS_MASSIMO);
         correzioneRoll   = constrain(map(canaliRC[0], 172, 1811, -MAX_ROLL,   MAX_ROLL),   -MAX_ROLL,  MAX_ROLL);
         correzionePitch  = constrain(map(canaliRC[1], 172, 1811,  MAX_PITCH, -MAX_PITCH),  -MAX_PITCH, MAX_PITCH);
-        //stampa stato solo se è cambiato (per evitare spam in console)
         if (statoAttuale != ultimoStatoStampato) {
             Serial.println("Volo: MANUALE (Comandi diretti dal radiocomando)");
             ultimoStatoStampato = statoAttuale;
         }
-    } else if (global_modalitaVolo == 2 || failsafe) {
+    } else if (!schiantoBloccato && (global_modalitaVolo == 2 || failsafe)) {
         if (failsafe) {
             if (statoAttuale != ultimoStatoStampato) {
                 Serial.println("FAILSAFE ATTIVO! direzione a target automatico!");
@@ -633,12 +667,12 @@ void loop()
         }
         calcolaPID(ALTITUDINE_TARGET, global_targetRoll,angoloPitch, angoloRoll,Velocita_stimata_Ms *3.6, targetVelocita,gasDiBase,correzionePitch, correzioneRoll, comandoGasFinale);
     }
-    if (statoSchiantoRilevato == true) {
-        motore.write(0);
+    if (statoSchiantoRilevato) {
+        motore.writeMicroseconds(GAS_MINIMO);
     } else {
         gestisci_allarmi();
         applicaMixer4Servi(correzionePitch, correzioneRoll);
-        motore.write(comandoGasFinale);
+        motore.writeMicroseconds(comandoGasFinale);
     }
 
     if (millis() > 10000 && gps.charsProcessed() < 10) {
@@ -650,7 +684,6 @@ void loop()
     velocita_gps_Ms   * 3.6f,
     Velocita_stimata_Ms * 3.6f,
     correzionePitch, correzioneRoll, comandoGasFinale);
-    delay(50);
 }
 
 // ============================================================
@@ -687,8 +720,6 @@ void applicaMixer4Servi(int pitch, int roll)
         posIntSX = CENTRO_SERVO + pitch + roll;
         posIntDX = CENTRO_SERVO + pitch - roll;
     } else {
-        // Caso D: tutto rotto
-        Serial.println("CRITICO: Nessun servo disponibile!");
         return;
     }
 
@@ -756,10 +787,10 @@ void aggiornaNavigazione(float angoloYaw)
             global_errore_rotta += 360.0;
         }
         // L1 Calcola l'accelerazione laterale necessaria per curvare  verso la rotta: a_lat = 2*V^2/l1 *sin(eta)
-        Velocita_stimata_Ms = max(Velocita_stimata_Ms, 1.0f); // Evita divisione per zero e accelera con più decisione a basse velocità
-        float L1 = max(Velocita_stimata_Ms * 4.0f, 1.0f); 
+        float velPerCalcolo = max(Velocita_stimata_Ms, 1.0f);
+        float L1 = max(velPerCalcolo * 4.0f, 1.0f); 
         float eta = radians(global_errore_rotta);
-        float a_lat = (2 * Velocita_stimata_Ms * Velocita_stimata_Ms / L1) * sin(eta);
+        float a_lat = (2 * velPerCalcolo * velPerCalcolo / L1) * sin(eta);
         float rollRad = atan(a_lat / 9.81);
         global_targetRoll = constrain(degrees(rollRad), -MAX_ROLL, MAX_ROLL);
 
@@ -776,28 +807,77 @@ void aggiornaNavigazione(float angoloYaw)
     }
 }
 
-// ============================================================
+
 //  DIAGNOSTICA SERVI
-// ============================================================
-void diagnosticaServi()
-{
-    float mA;
+void diagnosticaServi(){
 
-    mA = sensoreEstSX.getCurrent_mA();
-    estSX_Ok = (mA > 1 && mA < 2500.0);
-    if (!estSX_Ok) Serial.println("WARN: ServoEstSX anomalia corrente!");
+    if (!servo_sicurezza) {
+        estSX_Ok = estDX_Ok = intSX_Ok = intDX_Ok = true;
+        return;
+    }
+    
+    static int consecutiveErrors[4] = {0, 0, 0, 0};
+    float mA = 0.0f;
 
-    mA = sensoreEstDX.getCurrent_mA();
-    estDX_Ok = (mA > 1.0 && mA < 2500.0);
-    if (!estDX_Ok) Serial.println("WARN: ServoEstDX anomalia corrente!");
+    // Servo Esterno SX
+    if (servo_sicurezza){
+        mA = sensoreEstSX.getCurrent_mA();
+        if (mA < 0.5f || mA > 2500.0f) {
+            consecutiveErrors[0]++;
+            if (consecutiveErrors[0] > 5) {
+                estSX_Ok = false;
+                Serial.println("WARN: ServoEstSX anomalia corrente persistente!");
+            }
+        } else {
+            consecutiveErrors[0] = 0;
+            estSX_Ok = true;
+        }
 
-    mA = sensoreIntSX.getCurrent_mA();
-    intSX_Ok = (mA > 1.0 && mA < 2500.0);
-    if (!intSX_Ok) Serial.println("WARN: ServoIntSX anomalia corrente!");
+        // Servo Esterno DX
+        mA = sensoreEstDX.getCurrent_mA();
+        if (mA < 0.5f || mA > 2500.0f) {
+            consecutiveErrors[1]++;
+            if (consecutiveErrors[1] > 5) {
+                estDX_Ok = false;
+                Serial.println("WARN: ServoEstDX anomalia corrente persistente!");
+            }
+        } else {
+            consecutiveErrors[1] = 0;
+            estDX_Ok = true;
+        }
 
-    mA = sensoreIntDX.getCurrent_mA();
-    intDX_Ok = (mA > 1.0 && mA < 2500.0);
-    if (!intDX_Ok) Serial.println("WARN: ServoIntDX anomalia corrente!");
+        // Servo Interno SX
+        mA = sensoreIntSX.getCurrent_mA();
+        if (mA < 0.5f || mA > 2500.0f) {
+            consecutiveErrors[2]++;
+            if (consecutiveErrors[2] > 5) {
+                intSX_Ok = false;
+                Serial.println("WARN: ServoIntSX anomalia corrente persistente!");
+            }
+        } else {
+            consecutiveErrors[2] = 0;
+            intSX_Ok = true;
+        }
+
+        // Servo Interno DX
+        mA = sensoreIntDX.getCurrent_mA();
+        if (mA < 0.5f || mA > 2500.0f) {
+            consecutiveErrors[3]++;
+            if (consecutiveErrors[3] > 5) {
+                intDX_Ok = false;
+                Serial.println("WARN: ServoIntDX anomalia corrente persistente!");
+            }
+        } else {
+            consecutiveErrors[3] = 0;
+            intDX_Ok = true;
+        }
+    } else{
+        estSX_Ok = true;
+        estDX_Ok = true;
+        intSX_Ok = true;
+        intDX_Ok = true;
+        return;
+    }
 }
 
 // ============================================================
@@ -934,18 +1014,14 @@ void inviaTelemetria(float pitch, float roll, float yaw, float velPitotKmh, floa
 
     }
 }
-// ============================================================
 //  CALCOLO PID
-// ============================================================
 void calcolaPID(float targetAltitudine, float targetRoll,
                 float pitchReale, float rollReale,
                 float velocitaAttuale, float targetVelocita,
                 int gasDiBase,
                 int &comandoPitchOut, int &comandoRollOut, int &comandoGasOut)
 {
-    // ----------------------------------------------------------
     // 1. CALCOLO DEL TEMPO
-    // ----------------------------------------------------------
     unsigned long tempoAttuale = millis();
     float dt = (tempoAttuale - tempoPassatoPID) / 1000.0;
 
@@ -953,20 +1029,18 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     if (dt > 0.5) dt = 0.5;  // Evita lag improvvisi
     tempoPassatoPID = tempoAttuale;
 
-    // ----------------------------------------------------------
     // 2. PID ALTITUDINE
-    // ----------------------------------------------------------
     float targetPitch_Auto = 0.0;
     int gasCorrente = gasDiBase; 
 
     if (global_altitudineDalSuolo > ALTEZZA_MAX) {
         targetPitch_Auto = -8.0;
-        gasCorrente = GAS_MINIMO + 5; // Taglia il gas in picchiata!
+        gasCorrente = GAS_MINIMO + 5; 
         pid_sommaErroriAlt =  0.0;  
         pid_errorePassatoAlt=  0.0;
     } else if (global_altitudineDalSuolo < ALTEZZA_MIN) {
         targetPitch_Auto = 12.0;
-        gasCorrente = GAS_MASSIMO - 10; // Dai gas per risalire!
+        gasCorrente = GAS_MASSIMO - 10; 
         pid_sommaErroriAlt =  0.0;
         pid_errorePassatoAlt =  0.0;
     } else {
@@ -985,9 +1059,7 @@ void calcolaPID(float targetAltitudine, float targetRoll,
         targetPitch_Auto = constrain(P_alt + I_alt + D_alt, -10.0, 15.0);
     }
 
-    // ----------------------------------------------------------
     // 3. PID PITCH
-    // ----------------------------------------------------------
     float errorePitch = targetPitch_Auto - pitchReale;
 
     float P_Pitch = Kp_pitch * errorePitch;
@@ -1002,9 +1074,7 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     comandoPitchOut = (int)(P_Pitch + I_Pitch + D_Pitch);
     comandoPitchOut = constrain(comandoPitchOut, -MAX_PITCH, MAX_PITCH);
 
-    // ----------------------------------------------------------
     // 4. PID ROLL
-    // ----------------------------------------------------------
     float erroreRoll = targetRoll - rollReale;  
 
     float P_Roll = Kp_roll * erroreRoll;
@@ -1019,9 +1089,7 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     comandoRollOut = (int)(P_Roll + I_Roll + D_Roll);
     comandoRollOut  = constrain(comandoRollOut,  -MAX_ROLL,  MAX_ROLL);
 
-    // ----------------------------------------------------------
     // 5. AUTOTHROTTLE (PID velocità)
-    // ----------------------------------------------------------
     float erroreVel = targetVelocita - velocitaAttuale;
 
     float P_vel = Kp_vel * erroreVel;
@@ -1033,19 +1101,41 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     float D_vel = Kd_vel * ((erroreVel - pid_errorePassatoVel) / dt);
     pid_errorePassatoVel = erroreVel;
 
-    // Usa gasCorrente calcolato dalla sezione Altitudine!
     int gasCalcolato = gasCorrente + (int)(P_vel + I_vel + D_vel);
     comandoGasOut = constrain(gasCalcolato, GAS_MINIMO, GAS_MASSIMO);
 }
-void gestisciSchianto() {
-    if (statoSchiantoRilevato) {
-        motore.write(GAS_MINIMO); 
-        return; 
-    }
 
-    // 2. Controllo decollo 
-    if (Velocita_stimata_Ms > 5.0 || global_altitudineDalSuolo > 5.0) {
-        droneInVolo = true;
+
+void verifica_drone_in_volo() {          
+    if (!droneInVolo) {
+        bool velocitaSufficiente   = (Velocita_stimata_Ms > SOGLIA_VELO_DECOLLO_MS);
+        bool altitudineSufficiente = (global_altitudineDalSuolo > SOGLIA_ALT_DECOLLO_M);
+        bool velocitaConfermata    = gps.speed.isValid() || (Velocita_pitot_Ms > 0.5f);
+        bool decolloValido         = altitudineSufficiente && velocitaSufficiente && velocitaConfermata;
+
+        if (decolloValido) {
+            if (timestampDecollo == 0) {
+                timestampDecollo = millis();
+            }
+            if (millis() - timestampDecollo >= TEMPO_DECOLLO_SICURO_MS) {
+                droneInVolo = true;
+                timestampDecollo = 0;   
+                Serial.println("STATO: Decollo confermato, drone in volo.");
+            }
+        } else {
+            timestampDecollo = 0;       
+        }
+    }
+}
+
+void gestisciSchianto() {
+    if (!schianto_sicurezza) {
+        statoSchiantoRilevato = false;   
+        return;
+    }
+    if (statoSchiantoRilevato) {
+        motore.writeMicroseconds(GAS_MINIMO); 
+        return; 
     }
 
     if (!droneInVolo) return; 
@@ -1054,23 +1144,39 @@ void gestisciSchianto() {
     imu::Vector<3> accel = giroscopio.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
     float accelerazioneTotale = sqrt((accel.x() * accel.x()) + (accel.y() * accel.y()) + (accel.z() * accel.z()));
 
+    
     if (accelerazioneTotale > SOGLIA_G_SCHIANTO) {
-        statoSchiantoRilevato = true;
-        motore.write(GAS_MINIMO); 
-        
-        Serial.println("!!! IMPATTO RILEVATO DALL'IMU !!!");
-        Serial.print("Forza: "); 
-        Serial.print(accelerazioneTotale); 
-        Serial.println(" m/s^2");
-        
-        digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
-        digitalWrite(PIN_LED_VERDE_GPS, HIGH);
-        digitalWrite(PIN_LED_BLU_PID, HIGH);
-        tone(PIN_BUZZER, 2000); 
+        contatoreImpatto++;
+        if (contatoreImpatto >= SEMPLE_VALORI_SCHIANTO) {   
+                statoSchiantoRilevato = true;
+                schiantoBloccato = true;
+                contatoreImpatto = 0;
+                motore.writeMicroseconds(GAS_MINIMO); 
+                servoInternoSX.detach();
+                servoInternoDX.detach();
+                servoEsternoSX.detach();
+                servoEsternoDX.detach();
+                Serial.println("!!! IMPATTO RILEVATO DALL'IMU !!!");
+                Serial.print("Forza: "); 
+                Serial.print(accelerazioneTotale); 
+                Serial.println(" m/s^2");
+                
+                digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
+                digitalWrite(PIN_LED_VERDE_GPS, HIGH);
+                digitalWrite(PIN_LED_BLU_PID, HIGH);
+                tone(PIN_BUZZER, 2000); 
+            }
+    } else {
+        contatoreImpatto = 0;  
     }
 }
 
 void gestisciAlimentazione() {
+    if (!alimentazione_sicurezza) {   
+        batteriaBassa_teensy = false;
+        batteriaBassa_motore = false;
+        return;
+    }
     float vTeensy = sensoreTeensy.getBusVoltage_V();
     float vMotore = sensoreMotore.getBusVoltage_V();
 
@@ -1086,4 +1192,112 @@ void gestisciAlimentazione() {
     }
     // ── BATTERIA MOTORE 
     batteriaBassa_motore = (vMotore < VALORE_BATT_MOTORE_BASSA);
+}
+
+void comandi_da_terra() {
+    static String buffer = "";  
+
+    HardwareSerial* fonti[] = { &TELEMETRIA, &Serial };
+    for (auto* porta : fonti) {
+        while (porta->available()) {
+            char c = porta->read();
+            if (c == '\n') {
+                elaboraComando(buffer);
+                buffer = "";
+            } else {
+                buffer += c;
+                if (buffer.length() > 64) buffer = "";  
+            }
+        }
+    }
+}
+
+// ============================================================
+//  PARSER COMANDI
+// ============================================================
+void elaboraComando(const String& cmd) {
+    if (!cmd.startsWith("CMD:")) return;
+
+    int sep = cmd.indexOf(':', 4);
+    if (sep < 0) return;
+
+    String campo     = cmd.substring(4, sep);
+    String valoreStr = cmd.substring(sep + 1);   
+    int    val       = valoreStr.toInt();        
+
+    //Servi: posizione 
+    if (campo == "SERVO_ISX") {
+        servoInternoSX.write(constrain(val, 45, 135));
+
+    } else if (campo == "SERVO_IDX") {
+        servoInternoDX.write(constrain(val, 45, 135));
+
+    } else if (campo == "SERVO_ESX") {
+        servoEsternoSX.write(constrain(val, 45, 135));
+
+    } else if (campo == "SERVO_EDX") {
+        servoEsternoDX.write(constrain(val, 45, 135));
+
+    //Servi: attach/detach
+    } else if (campo == "SERVO_ISX_ATTACH") {
+        servoInternoSX.attach(pinIntSX);
+
+    } else if (campo == "SERVO_IDX_ATTACH") {
+        servoInternoDX.attach(pinIntDX);
+
+    } else if (campo == "SERVO_ESX_ATTACH") {
+        servoEsternoSX.attach(pinEstSX);  
+
+    } else if (campo == "SERVO_EDX_ATTACH") {
+        servoEsternoDX.attach(pinEstDX);  
+
+    } else if (campo == "SERVO_ISX_DETACH") {
+        servoInternoSX.detach();
+
+    } else if (campo == "SERVO_IDX_DETACH") {
+        servoInternoDX.detach();
+
+    } else if (campo == "SERVO_ESX_DETACH") {
+        servoEsternoSX.detach();
+
+    } else if (campo == "SERVO_EDX_DETACH") {
+        servoEsternoDX.detach();
+
+    } else if (campo == "RELE_ON") {
+        digitalWrite(PIN_RELE, HIGH);
+        relèAttivato = true;
+
+    } else if (campo == "RELE_OFF") {
+        digitalWrite(PIN_RELE, LOW);
+        relèAttivato = false;
+
+    } else if (campo == "SICUREZZA_SCHIANTO_ON") {
+        schianto_sicurezza = true;
+
+    } else if (campo == "SICUREZZA_SCHIANTO_OFF") {
+        schianto_sicurezza = false;
+
+    } else if (campo == "SICUREZZA_ALIMENTAZIONE_ON") {
+        alimentazione_sicurezza = true;   
+
+    } else if (campo == "SICUREZZA_ALIMENTAZIONE_OFF") {
+        alimentazione_sicurezza = false;   
+
+    } else if (campo == "SICUREZZA_SERVI_ON") {
+        servo_sicurezza = true;
+
+    } else if (campo == "SICUREZZA_SERVI_OFF") {
+        servo_sicurezza = false;
+
+    // Gas 
+    } else if (campo == "GAS") {
+        if (global_modalitaVolo == 1 &&) {
+            motore.writeMicroseconds(constrain(val, GAS_MINIMO, GAS_MASSIMO));   
+        }
+
+    //Modalità di volo
+    } else if (campo == "MODO") {
+        if (!failsafe && val >= 1 && val <= 2) {
+            global_modalitaVolo = val;
+        }
 }
