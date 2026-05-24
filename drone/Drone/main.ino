@@ -77,12 +77,16 @@ const float VELOCITA_AVVICINAMENTO= 45.0;
 const float DISTANZA_FRENATA = 150.0;  
 const int   IMU_CAMPIONI_TARA = 200;
 
+const float T_MOTORE_THROTTLE_START = 70.0f;  
+const float T_MOTORE_THROTTLE_END  = 90.0f; 
+const int   GAS_THROTTLE_MIN = 1200; 
+
 const int SEMPLE_VALORI_SCHIANTO=3;
 
 //  NAVIGAZIONE
-const double TARGET_LAT = 41.902782;
-const double TARGET_LON = 12.496366;
-const float  ALTITUDINE_TARGET = 40.0;
+double TARGET_LAT = 41.902782;
+double TARGET_LON = 12.496366;
+float  ALTITUDINE_TARGET = 40.0;
 
 float global_altitudineDiPartenza = 0.0;
 float global_targetRoll  = 0.0;
@@ -170,6 +174,8 @@ bool interni_staccati          = false;
 int  global_modalitaVolo       = 1;
 bool statoPrecedenteInterni    = true;
 bool statoPrecedenteEsterni    = true;
+
+bool sistema_sicurezza_temp = true;
 
 //  PROTOTIPI
 void applicaMixer4Servi(int pitch, int roll);
@@ -552,6 +558,7 @@ void loop()
     float voltaggio_Sensore_motore = analogRead(PIN_T_motore) * (3.3 / 1023.0);
     Global_Temperatura_motore = (voltaggio_Sensore_motore - 0.5) * 100.0;
 
+
     // 7. pitot – lettura velocità aria
     int lettura_dal_pin_pitot= analogRead(PIN_ARIA);
     lettura_dal_pin_pitot = constrain(lettura_dal_pin_pitot, 0, 1023);
@@ -667,30 +674,34 @@ void loop()
         }
         calcolaPID(ALTITUDINE_TARGET, global_targetRoll,angoloPitch, angoloRoll,Velocita_stimata_Ms *3.6, targetVelocita,gasDiBase,correzionePitch, correzioneRoll, comandoGasFinale);
     }
+    int gasEffettivo = GAS_MINIMO;   // ← variabile che riflette sempre il reale
+
     if (statoSchiantoRilevato) {
         motore.writeMicroseconds(GAS_MINIMO);
+        gasEffettivo = GAS_MINIMO;
     } else {
         gestisci_allarmi();
         applicaMixer4Servi(correzionePitch, correzioneRoll);
-        motore.writeMicroseconds(comandoGasFinale);
-    }
 
-    if (millis() > 10000 && gps.charsProcessed() < 10) {
-        Serial.println("ATTENZIONE: Nessun dato dal GPS. Controlla i cavi TX e RX!");
+        int limiteTermico = gasMaxTermico();
+        if (comandoGasFinale > limiteTermico && sistema_sicurezza_temp) {
+            comandoGasFinale = limiteTermico;
+        }
+        motore.writeMicroseconds(comandoGasFinale);
+        gasEffettivo = comandoGasFinale;
     }
     inviaTelemetria(
     angoloPitch, angoloRoll, angoloYaw,
     Velocita_pitot_Ms * 3.6f,
     velocita_gps_Ms   * 3.6f,
     Velocita_stimata_Ms * 3.6f,
-    correzionePitch, correzioneRoll, comandoGasFinale);
+    correzionePitch, correzioneRoll, gasEffettivo);
 }
 
 // ============================================================
 //  MIXER 4 SERVI
 // ============================================================
-void applicaMixer4Servi(int pitch, int roll)
-{
+void applicaMixer4Servi(int pitch, int roll){
     int posIntSX = CENTRO_SERVO;
     int posIntDX = CENTRO_SERVO;
     int posEstSX = CENTRO_SERVO;
@@ -722,7 +733,6 @@ void applicaMixer4Servi(int pitch, int roll)
     } else {
         return;
     }
-
     // ── Attach/detach automatico 
     if (interniAttivi != statoPrecedenteInterni) {
         if (interniAttivi) {
@@ -807,18 +817,14 @@ void aggiornaNavigazione(float angoloYaw)
     }
 }
 
-
 //  DIAGNOSTICA SERVI
 void diagnosticaServi(){
-
     if (!servo_sicurezza) {
         estSX_Ok = estDX_Ok = intSX_Ok = intDX_Ok = true;
         return;
     }
-    
     static int consecutiveErrors[4] = {0, 0, 0, 0};
     float mA = 0.0f;
-
     // Servo Esterno SX
     if (servo_sicurezza){
         mA = sensoreEstSX.getCurrent_mA();
@@ -832,7 +838,6 @@ void diagnosticaServi(){
             consecutiveErrors[0] = 0;
             estSX_Ok = true;
         }
-
         // Servo Esterno DX
         mA = sensoreEstDX.getCurrent_mA();
         if (mA < 0.5f || mA > 2500.0f) {
@@ -845,7 +850,6 @@ void diagnosticaServi(){
             consecutiveErrors[1] = 0;
             estDX_Ok = true;
         }
-
         // Servo Interno SX
         mA = sensoreIntSX.getCurrent_mA();
         if (mA < 0.5f || mA > 2500.0f) {
@@ -858,7 +862,6 @@ void diagnosticaServi(){
             consecutiveErrors[2] = 0;
             intSX_Ok = true;
         }
-
         // Servo Interno DX
         mA = sensoreIntDX.getCurrent_mA();
         if (mA < 0.5f || mA > 2500.0f) {
@@ -880,11 +883,8 @@ void diagnosticaServi(){
     }
 }
 
-// ============================================================
 //  GESTIONE LUCI DI STATO
-// ============================================================
 void gestisci_allarmi() {
-
     // 1. EMERGENZA CRITICA: Guasto Servi (Tutti accesi fissi)
     if (!estSX_Ok || !estDX_Ok || !intSX_Ok || !intDX_Ok) {
         digitalWrite(PIN_LED_ROSSO_ALARM, HIGH); 
@@ -892,21 +892,18 @@ void gestisci_allarmi() {
         digitalWrite(PIN_LED_BLU_PID,   HIGH);
         return; 
     }
-
     // 2. LED ROSSO: Allarmi (Batteria o Failsafe)
     if (batteriaBassa_motore || failsafe) {
         digitalWrite(PIN_LED_ROSSO_ALARM, HIGH); 
     } else {
         digitalWrite(PIN_LED_ROSSO_ALARM, LOW);  
     }
-
     // 3. LED VERDE: Stato GPS
     if (gps.location.isValid()) {
         digitalWrite(PIN_LED_VERDE_GPS, HIGH); 
     } else {
         digitalWrite(PIN_LED_VERDE_GPS, LOW);  
     }
-
     // 4. LED BLU: Modalità di volo
     if (global_modalitaVolo == 2) {
         digitalWrite(PIN_LED_BLU_PID, HIGH);   
@@ -915,9 +912,7 @@ void gestisci_allarmi() {
     }
 }
 
-// ============================================================
 //  INVIO TELEMETRIA COMPLETA (Formato CSV)
-// ============================================================
 void inviaTelemetria(float pitch, float roll, float yaw, float velPitotKmh, float velGpsKmh, float velStimataKmh, int outPitch, int outRoll, int outGas) {
     
     unsigned long tempoAttuale = millis();
@@ -1194,6 +1189,20 @@ void gestisciAlimentazione() {
     batteriaBassa_motore = (vMotore < VALORE_BATT_MOTORE_BASSA);
 }
 
+int gasMaxTermico() {
+    if (Global_Temperatura_motore <= T_MOTORE_THROTTLE_START) {
+        return GAS_MASSIMO;   
+    }
+    if (Global_Temperatura_motore >= T_MOTORE_THROTTLE_END) {
+        return GAS_THROTTLE_MIN;
+    }
+
+    float t = (Global_Temperatura_motore - T_MOTORE_THROTTLE_START) /
+              (T_MOTORE_THROTTLE_END   - T_MOTORE_THROTTLE_START);  
+    int limite = (int)(GAS_MASSIMO - t * (GAS_MASSIMO - GAS_THROTTLE_MIN));
+    return limite;
+}
+
 void comandi_da_terra() {
     static String buffer = "";  
 
@@ -1202,6 +1211,7 @@ void comandi_da_terra() {
         while (porta->available()) {
             char c = porta->read();
             if (c == '\n') {
+                segnalaOK();
                 elaboraComando(buffer);
                 buffer = "";
             } else {
@@ -1212,9 +1222,7 @@ void comandi_da_terra() {
     }
 }
 
-// ============================================================
 //  PARSER COMANDI
-// ============================================================
 void elaboraComando(const String& cmd) {
     if (!cmd.startsWith("CMD:")) return;
 
@@ -1288,6 +1296,11 @@ void elaboraComando(const String& cmd) {
 
     } else if (campo == "SICUREZZA_SERVI_OFF") {
         servo_sicurezza = false;
+    }else if (campo == "SICUREZZA_TEMP_ON") {
+        sistema_sicurezza_temp = true;
+
+    } else if (campo == "SICUREZZA_TEMP_OFF") {
+        sistema_sicurezza_temp = false;
 
     // Gas 
     } else if (campo == "GAS") {
@@ -1300,4 +1313,22 @@ void elaboraComando(const String& cmd) {
         if (!failsafe && val >= 1 && val <= 2) {
             global_modalitaVolo = val;
         }
+    }else if (campo == "SET_LATITUDE") {
+        float lat = valoreStr.toFloat();
+        if (lat >= -90.0 && lat <= 90.0) {
+            TARGET_LAT = lat;
+        }
+
+    } else if (campo == "SET_LONGITUDE") {
+        float lon = valoreStr.toFloat();
+        if (lon >= -180.0 && lon <= 180.0) {
+            TARGET_LON = lon;
+        }
+
+    }else if (campo == "SET_ALTITUDE") {
+        float alt = valoreStr.toFloat();
+        if (alt >= 0.0 && alt <= 500.0) {
+            ALTITUDINE_TARGET = alt;
+        }
+    }
 }
