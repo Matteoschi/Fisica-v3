@@ -14,8 +14,6 @@ TinyGPSPlus gps;
 Adafruit_BNO055  giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
 Adafruit_BMP3XX barometro;
 
-// LIDAR usa Serial2 direttamente (no SoftwareSerial su Teensy)
-
 const int PIN_T_motore=A1;
 float Global_Temperatura_motore = 0.0;
 float temp_aria_barometro = 0.0; 
