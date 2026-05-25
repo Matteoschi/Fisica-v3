@@ -7,14 +7,16 @@
 #include "SBUS.h"
 #include <Adafruit_INA219.h>
 #include <Adafruit_BMP3XX.h>
+#include <SoftwareSerial.h>
 
 //  SENSORI
 TinyGPSPlus gps;
 Adafruit_BNO055  giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
 Adafruit_BMP3XX barometro;
 
+// LIDAR usa Serial2 direttamente (no SoftwareSerial su Teensy)
+
 const int PIN_T_motore=A1;
-const int PIN_T_teensy=A2;
 float Global_Temperatura_motore = 0.0;
 float temp_aria_barometro = 0.0; 
 
@@ -22,6 +24,7 @@ float temp_aria_barometro = 0.0;
 #define GPS_SERIAL  Serial1
 #define BAUD_RATE_GPS 9600
 #define BAUD_RATE_LORA 57600
+#define BAUD_RATE_LIDAR 115200
 
 //  TELEMETRIA LORA 
 #define TELEMETRIA Serial4         
@@ -83,18 +86,25 @@ const int   GAS_THROTTLE_MIN = 1200;
 
 const int SEMPLE_VALORI_SCHIANTO=3;
 
+const float ALPHA_LIDAR = 0.25f;
+const float MARGINE_SICUREZZA_LIDAR = 6.0f;
+
 //  NAVIGAZIONE
 double TARGET_LAT = 41.902782;
 double TARGET_LON = 12.496366;
 float  ALTITUDINE_TARGET = 40.0;
 
+float Global_altitutudine_lidar = -1.0;  
+float Global_altitudine_baro = 0.0;     
+float Global_altitudine = 0.0;          // Fuso LIDAR + Baro
+float set_up_gps_alt = 0.0;              // Dal barometro in setup
+float set_up_lidar_alt = 0.0;            // Dal LIDAR in setup
 float global_altitudineDiPartenza = 0.0;
 float global_targetRoll  = 0.0;
 float global_distanzaDalTarget = 0.0;
 float global_rottaVersoTarget = 0.0;
 float global_errore_rotta  = 0.0;
-float global_altitudineDalSuolo = 0.0;
-float velocitaGPS = 0.0;
+float Global_atltitudine_gps = 0.0;
 float Velocita_pitot_Ms = 0.0;
 float alpha_vel= 0.7; 
 float Velocita_stimata_Ms = 0.0;
@@ -145,11 +155,12 @@ static int contatoreImpatto = 0;
 const int PIN_LED_ROSSO_ALARM = 2; // Allarmi come moduli mancanti / Batteria
 const int PIN_LED_VERDE_GPS = 3; // GPS Fix e settaggio pitot
 const int PIN_LED_BLU_PID  = 4; // Modalità AUTO pid e settaggio barometro
-const int PIN_BUZZER = 5;
+const int PIN_BUZZER = 12;     // Cambiato da 5 (conflitto LIDAR)
 const int PIN_RELE = 20;
 
 //  FLAGS STATO SISTEMA
 bool imuPronto       = false;
+bool lidarOk = false;
 bool baroPronto      = false;
 bool pitotCalibrato  = false;
 bool Voltaggio       = true;
@@ -170,7 +181,6 @@ bool relèAttivato            = false;
 
 bool estSX_Ok = true, estDX_Ok = true;
 bool intSX_Ok = true, intDX_Ok = true;
-bool interni_staccati          = false;
 int  global_modalitaVolo       = 1;
 bool statoPrecedenteInterni    = true;
 bool statoPrecedenteEsterni    = true;
@@ -193,7 +203,10 @@ void verifica_drone_in_volo();
 void inizializzazione_servo();
 void inizializzazione_motore();
 void comandi_da_terra();                       
-void elaboraComando(const String& cmd);        
+void elaboraComando(const String& cmd);     
+void aggiornaLidar();
+void altitudine();
+int  gasMaxTermico();   
 
 void segnalaOK() {
     digitalWrite(PIN_LED_VERDE_GPS, HIGH);
@@ -214,15 +227,17 @@ void segnalaErrore() {
 
 void segnalaCalibrazione(int pin_led) {
     digitalWrite(pin_led, !digitalRead(pin_led));
-    digitalWrite(PIN_BUZZER, !digitalRead(PIN_BUZZER));
+    tone(PIN_BUZZER, 1000, 30);
 }
 
 
 void setup()
 {
-    Serial.begin(115200);
+    Serial.begin(115200);  
     Wire.begin();
     Wire.setClock(400000);
+    Wire1.begin();          
+    Wire1.setClock(400000);
 
     pinMode(PIN_LED_ROSSO_ALARM, OUTPUT);
     pinMode(PIN_LED_VERDE_GPS, OUTPUT);
@@ -250,7 +265,11 @@ void setup()
     ricevente.begin();
     TELEMETRIA.begin(BAUD_RATE_LORA);
     GPS_SERIAL.begin(BAUD_RATE_GPS);
+    Serial2.begin(BAUD_RATE_LIDAR); 
+    delay(100);
 
+    while (Serial2.available()) Serial2.read();
+    
     // INIZIALIZZAZIONE SENSORI
     while ((!imuPronto || !baroPronto || !pitotCalibrato || !Voltaggio) && tentativi < MAX_TENTATIVI) {
         tentativi++;
@@ -260,6 +279,33 @@ void setup()
         Serial.print  (" / ");
         Serial.println(MAX_TENTATIVI);
         Serial.println("-----------------------------------------");
+
+        if (!lidarOk) {
+            Serial.println("[ ] TF-Luna LIDAR .............. ");
+            unsigned long t0 = millis();
+            while (millis() - t0 < 3000) {
+                if (Serial2.available() >= 9) {
+                    if (Serial2.read() == 0x59 && Serial2.read() == 0x59) {
+                        for (int i = 0; i < 7; i++) Serial2.read();
+                        lidarOk = true;
+                        break;
+                    }
+                }
+            }
+            if (lidarOk) {
+                for (int i = 0; i < 10; i++) {
+                    aggiornaLidar();
+                    delay(20);
+                }
+                Serial.println("[OK] TF-Luna LIDAR");
+                segnalaOK();
+            } else {
+                Serial.println("[WARN] TF-Luna LIDAR assente — continuo senza");
+            }
+        } else {
+            Serial.println("[OK] TF-Luna LIDAR");
+        }
+
         // 1. IMU 
         if (!imuPronto) {
         Serial.print("[ ] IMU BNO055 ................. ");
@@ -330,6 +376,7 @@ void setup()
                     barometro.readAltitude(1013.25);
                     delay(25);
                 }
+                
                 float sommaAlt = 0.0;
                 bool erroreCalibrazione = false;
 
@@ -353,6 +400,7 @@ void setup()
                     sommaAlt += altIstantanea;
                     delay(25);
                 }
+                
                 if (erroreCalibrazione) {
                     segnalaErrore();
                     continue; 
@@ -362,9 +410,18 @@ void setup()
                 digitalWrite(PIN_BUZZER, LOW);
 
                 baroPronto = true;
-                global_altitudineDiPartenza = sommaAlt / 20.0;
+                float mediaBaroASL = sommaAlt / 20.0;
+                set_up_gps_alt = mediaBaroASL;  // Salva per uso in setup
                 
-                Serial.print("OK (tara ASL: ");
+                if (set_up_gps_alt < 5.0 && set_up_lidar_alt < 5.0 && set_up_lidar_alt > 0.0 && lidarOk) {
+                    
+                    global_altitudineDiPartenza = mediaBaroASL - set_up_lidar_alt;
+                    Serial.print("OK (Tara ASL corretta da LIDAR: ");
+                } else {
+                    global_altitudineDiPartenza = mediaBaroASL;
+                    Serial.print("OK (Tara ASL standard: ");
+                }
+                
                 Serial.print(global_altitudineDiPartenza, 1);
                 Serial.println(" m)");
                 segnalaOK();
@@ -546,12 +603,14 @@ void loop()
     float angoloRoll  = event.orientation.z - offsetRoll;
     float angoloYaw   = event.orientation.x;
 
-    // 4. aggiorna navigazione
-    aggiornaNavigazione(angoloYaw);
-
     // 5. lettura barometro
     float altitudineAttuale  = barometro.readAltitude(1013.25);
-    global_altitudineDalSuolo = altitudineAttuale - global_altitudineDiPartenza;
+    Global_atltitudine_gps = altitudineAttuale - global_altitudineDiPartenza;
+    Global_altitudine_baro = Global_atltitudine_gps;  // Backup barometro
+    
+    // 5b. AGGIORNA LIDAR E ALTITUDINE FUSA
+    aggiornaLidar();
+    altitudine();
 
     // 6. controllo temperature
     temp_aria_barometro = barometro.temperature;
@@ -585,6 +644,8 @@ void loop()
     } else {
         Velocita_stimata_Ms = Velocita_pitot_Ms; 
     }
+
+    aggiornaNavigazione(angoloYaw);
 
     // 9. PREPARAZIONE DATI MOTORE
     float targetVelocita = 0.0;
@@ -674,7 +735,7 @@ void loop()
         }
         calcolaPID(ALTITUDINE_TARGET, global_targetRoll,angoloPitch, angoloRoll,Velocita_stimata_Ms *3.6, targetVelocita,gasDiBase,correzionePitch, correzioneRoll, comandoGasFinale);
     }
-    int gasEffettivo = GAS_MINIMO;   // ← variabile che riflette sempre il reale
+    int gasEffettivo = GAS_MINIMO;  
 
     if (statoSchiantoRilevato) {
         motore.writeMicroseconds(GAS_MINIMO);
@@ -697,10 +758,7 @@ void loop()
     Velocita_stimata_Ms * 3.6f,
     correzionePitch, correzioneRoll, gasEffettivo);
 }
-
-// ============================================================
 //  MIXER 4 SERVI
-// ============================================================
 void applicaMixer4Servi(int pitch, int roll){
     int posIntSX = CENTRO_SERVO;
     int posIntDX = CENTRO_SERVO;
@@ -825,61 +883,53 @@ void diagnosticaServi(){
     }
     static int consecutiveErrors[4] = {0, 0, 0, 0};
     float mA = 0.0f;
-    // Servo Esterno SX
-    if (servo_sicurezza){
-        mA = sensoreEstSX.getCurrent_mA();
-        if (mA < 0.5f || mA > 2500.0f) {
-            consecutiveErrors[0]++;
-            if (consecutiveErrors[0] > 5) {
-                estSX_Ok = false;
-                Serial.println("WARN: ServoEstSX anomalia corrente persistente!");
-            }
-        } else {
-            consecutiveErrors[0] = 0;
-            estSX_Ok = true;
+
+    mA = sensoreEstSX.getCurrent_mA();
+    if (mA < 0.5f || mA > 2500.0f) {
+        consecutiveErrors[0]++;
+        if (consecutiveErrors[0] > 5) {
+            estSX_Ok = false;
+            Serial.println("WARN: ServoEstSX anomalia corrente persistente!");
         }
-        // Servo Esterno DX
-        mA = sensoreEstDX.getCurrent_mA();
-        if (mA < 0.5f || mA > 2500.0f) {
-            consecutiveErrors[1]++;
-            if (consecutiveErrors[1] > 5) {
-                estDX_Ok = false;
-                Serial.println("WARN: ServoEstDX anomalia corrente persistente!");
-            }
-        } else {
-            consecutiveErrors[1] = 0;
-            estDX_Ok = true;
-        }
-        // Servo Interno SX
-        mA = sensoreIntSX.getCurrent_mA();
-        if (mA < 0.5f || mA > 2500.0f) {
-            consecutiveErrors[2]++;
-            if (consecutiveErrors[2] > 5) {
-                intSX_Ok = false;
-                Serial.println("WARN: ServoIntSX anomalia corrente persistente!");
-            }
-        } else {
-            consecutiveErrors[2] = 0;
-            intSX_Ok = true;
-        }
-        // Servo Interno DX
-        mA = sensoreIntDX.getCurrent_mA();
-        if (mA < 0.5f || mA > 2500.0f) {
-            consecutiveErrors[3]++;
-            if (consecutiveErrors[3] > 5) {
-                intDX_Ok = false;
-                Serial.println("WARN: ServoIntDX anomalia corrente persistente!");
-            }
-        } else {
-            consecutiveErrors[3] = 0;
-            intDX_Ok = true;
-        }
-    } else{
+    } else {
+        consecutiveErrors[0] = 0;
         estSX_Ok = true;
+    }
+    // Servo Esterno DX
+    mA = sensoreEstDX.getCurrent_mA();
+    if (mA < 0.5f || mA > 2500.0f) {
+        consecutiveErrors[1]++;
+        if (consecutiveErrors[1] > 5) {
+            estDX_Ok = false;
+            Serial.println("WARN: ServoEstDX anomalia corrente persistente!");
+        }
+    } else {
+        consecutiveErrors[1] = 0;
         estDX_Ok = true;
+    }
+    // Servo Interno SX
+    mA = sensoreIntSX.getCurrent_mA();
+    if (mA < 0.5f || mA > 2500.0f) {
+        consecutiveErrors[2]++;
+        if (consecutiveErrors[2] > 5) {
+            intSX_Ok = false;
+            Serial.println("WARN: ServoIntSX anomalia corrente persistente!");
+        }
+    } else {
+        consecutiveErrors[2] = 0;
         intSX_Ok = true;
+    }
+    // Servo Interno DX
+    mA = sensoreIntDX.getCurrent_mA();
+    if (mA < 0.5f || mA > 2500.0f) {
+        consecutiveErrors[3]++;
+        if (consecutiveErrors[3] > 5) {
+            intDX_Ok = false;
+            Serial.println("WARN: ServoIntDX anomalia corrente persistente!");
+        }
+    } else {
+        consecutiveErrors[3] = 0;
         intDX_Ok = true;
-        return;
     }
 }
 
@@ -963,7 +1013,7 @@ void inviaTelemetria(float pitch, float roll, float yaw, float velPitotKmh, floa
         TELEMETRIA.print(pitch, 1);                TELEMETRIA.print(","); // 10. Pitch reale
         TELEMETRIA.print(roll, 1);                 TELEMETRIA.print(","); // 11. Roll reale
         TELEMETRIA.print(yaw, 1);                  TELEMETRIA.print(","); // 12. Yaw reale (Bussola)
-        TELEMETRIA.print(global_altitudineDalSuolo, 1); TELEMETRIA.print(","); // 13. Altitudine relativa
+        TELEMETRIA.print(Global_altitudine, 1); TELEMETRIA.print(","); // 13. Altitudine relativa
         
         // --- VELOCITÀ ---
         TELEMETRIA.print(velPitotKmh, 1);          TELEMETRIA.print(","); // 14. Velocità Aria (Pitot)
@@ -1028,18 +1078,18 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     float targetPitch_Auto = 0.0;
     int gasCorrente = gasDiBase; 
 
-    if (global_altitudineDalSuolo > ALTEZZA_MAX) {
+    if (Global_altitudine > ALTEZZA_MAX) {
         targetPitch_Auto = -8.0;
         gasCorrente = GAS_MINIMO + 5; 
         pid_sommaErroriAlt =  0.0;  
         pid_errorePassatoAlt=  0.0;
-    } else if (global_altitudineDalSuolo < ALTEZZA_MIN) {
+    } else if (Global_altitudine < ALTEZZA_MIN) {
         targetPitch_Auto = 12.0;
         gasCorrente = GAS_MASSIMO - 10; 
         pid_sommaErroriAlt =  0.0;
         pid_errorePassatoAlt =  0.0;
     } else {
-        float erroreAltitudine = targetAltitudine - global_altitudineDalSuolo;
+        float erroreAltitudine = targetAltitudine - Global_altitudine;
         erroreAltitudine = constrain(erroreAltitudine, -20.0, 20.0);
 
         float P_alt = Kp_alt * erroreAltitudine;
@@ -1104,7 +1154,7 @@ void calcolaPID(float targetAltitudine, float targetRoll,
 void verifica_drone_in_volo() {          
     if (!droneInVolo) {
         bool velocitaSufficiente   = (Velocita_stimata_Ms > SOGLIA_VELO_DECOLLO_MS);
-        bool altitudineSufficiente = (global_altitudineDalSuolo > SOGLIA_ALT_DECOLLO_M);
+        bool altitudineSufficiente = (Global_altitudine > SOGLIA_ALT_DECOLLO_M);
         bool velocitaConfermata    = gps.speed.isValid() || (Velocita_pitot_Ms > 0.5f);
         bool decolloValido         = altitudineSufficiente && velocitaSufficiente && velocitaConfermata;
 
@@ -1164,6 +1214,57 @@ void gestisciSchianto() {
     } else {
         contatoreImpatto = 0;  
     }
+}
+
+void aggiornaLidar() {
+  // Solo se sotto margine di sicurezza (atterraggio/volo basso)
+  if (Global_atltitudine_gps > MARGINE_SICUREZZA_LIDAR) {
+    while (Serial2.available()) {
+      Serial2.read();  // Svuota buffer
+    }
+    // Mantieni ultimo valore valido per continuità
+    return;
+  }
+
+  static uint8_t buffer[9];
+  
+  while (Serial2.available() >= 9) {
+    if (Serial2.read() == 0x59 && Serial2.read() == 0x59) {
+      buffer[0] = 0x59;
+      buffer[1] = 0x59;
+      for (int i = 2; i < 9; i++) {
+        buffer[i] = Serial2.read();
+      }
+
+      // Checksum
+      uint8_t checksum = 0;
+      for (int i = 0; i < 8; i++) {
+        checksum += buffer[i];
+      }
+      if (checksum != buffer[8]) continue;
+
+      uint16_t distanza_cm = buffer[2] | ((uint16_t)buffer[3] << 8);
+      float distanza_m = distanza_cm / 100.0f;
+      
+      // Filtro passa-basso: inizializza correttamente al primo valore
+      if (Global_altitutudine_lidar < 0.0f) {
+        Global_altitutudine_lidar = distanza_m;  // Prima lettura
+      } else {
+        Global_altitutudine_lidar = ALPHA_LIDAR * distanza_m + (1.0f - ALPHA_LIDAR) * Global_altitutudine_lidar;
+      }
+      set_up_lidar_alt = Global_altitutudine_lidar;  // Salva per setup
+      return;
+    }
+  }
+}
+
+void altitudine() {
+  // Usa LIDAR in volo basso, fallback a barometro
+  if (lidarOk && Global_altitutudine_lidar > 0.0f && Global_atltitudine_gps < MARGINE_SICUREZZA_LIDAR) {
+    Global_altitudine = Global_altitutudine_lidar;  // LIDAR ha priorità in basso
+  } else {
+    Global_altitudine = Global_altitudine_baro;    // Barometro come default
+  }
 }
 
 void gestisciAlimentazione() {
@@ -1304,7 +1405,7 @@ void elaboraComando(const String& cmd) {
 
     // Gas 
     } else if (campo == "GAS") {
-        if (global_modalitaVolo == 1 &&) {
+        if (global_modalitaVolo == 1) {
             motore.writeMicroseconds(constrain(val, GAS_MINIMO, GAS_MASSIMO));   
         }
 

@@ -114,8 +114,8 @@ SAT_MIN = 5           # < soglia → ROSSO
 # ── Throttle 
 THR_WARN = 0.8        # >= soglia → barra GIALLA
 
-GAS_MINIMO = 25        
-GAS_MASSIMO = 130       
+GAS_MINIMO  = 1000
+GAS_MASSIMO = 2000   
 
 # ── Orizzonte artificiale 
 PFD_CX, PFD_CY, PFD_R = W // 2, 245, 142
@@ -139,6 +139,10 @@ BATTERY_PANNEL =pygame.Rect(878, 522, 378, 180)
 SERVI_X   = SERVI_PANEL.x + 28
 SERVI_Y   = SERVI_PANEL.y + 52
 SERVI_GAP = 88
+
+
+_serial_lock    = threading.Lock()
+_ser_instance   = None
 
 
 T = {
@@ -186,6 +190,41 @@ T = {
     "lon":             0.0,
     "relay":           False,
 }
+
+def send_command(campo: str, valore) -> bool:
+    global _ser_instance
+    if _ser_instance is None or not _ser_instance.is_open:
+        print("[CMD] Seriale non disponibile")
+        return False
+    msg = f"CMD:{campo}:{valore}\n".encode('utf-8')
+    with _serial_lock:
+        try:
+            _ser_instance.write(msg)
+            print(f"[CMD] ▶ {msg.strip()}")
+            return True
+        except serial.SerialException as e:
+            print(f"[CMD] Errore invio: {e}")
+            return False
+
+def read_from_serial():
+    global _ser_instance
+    while True:
+        try:
+            ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+            _ser_instance = ser                      
+            T["serial_ok"] = True
+            print(f"[SERIAL] Connesso a {SERIAL_PORT} @ {BAUD_RATE} baud.")
+            while True:
+                with _serial_lock:                   
+                    raw = ser.readline()
+                if raw:
+                    parse_telemetry(raw.decode('utf-8', errors='ignore').strip())
+        except serial.SerialException as e:
+            _ser_instance = None                     
+            T["serial_ok"] = False
+            print(f"[SERIAL] Porta non disponibile: {e} — nuovo tentativo in 3s")
+            pygame.time.wait(3000)
+
 
 def clamp(v, lo, hi):
     return max(lo, min(v, hi))
@@ -288,9 +327,7 @@ def parse_telemetry(line):
         # ── Output PID/mixer ─────────────────────────────────────────────
         T["pid_pitch"]= float(f[23])
         T["pid_roll"] = float(f[24])
-        # outGas in µs (range tipico 1000-2000); normalizzato 0.0-1.0 per la barra
         T["pid_gas"] = clamp((float(f[25]) - GAS_MINIMO) / (GAS_MASSIMO - GAS_MINIMO), 0.0, 1.0)
-# dove GAS_MINIMO = 25, GAS_MASSIMO = 130 1.0)
         T["throttle"]  = T["pid_gas"]
 
         # ── Posizione fisica servi [°] ───────────────────────────────────
@@ -313,21 +350,6 @@ def parse_telemetry(line):
 
     except Exception as e:
         print(f"[ERR] Pacchetto corrotto saltato: {e}")
-
-def read_from_serial():
-    while True:
-        try:
-            ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-            print(f"[SERIAL] Connesso a {SERIAL_PORT} @ {BAUD_RATE} baud.")
-            T["serial_ok"] = True
-            while True:
-                raw = ser.readline()
-                if raw:
-                    parse_telemetry(raw.decode('utf-8', errors='ignore').strip())
-        except serial.SerialException as e:
-            T["serial_ok"] = False
-            print(f"[SERIAL] Porta non disponibile: {e} — nuovo tentativo in 3s")
-            pygame.time.wait(3000)
 
 def text(surf, s, pos, font, color, anchor="topleft"):
 
@@ -752,9 +774,74 @@ def aggiorna_warning(t: dict) -> None:
     if not (t["ok_isx"] and t["ok_idx"] and t["ok_esx"] and t["ok_edx"]):
         warning("errore.wav", cooldown_ms=CD_ERRORE)
 
+def terminal_cli_thread():
+    help_text = """
+    =========================================================
+    COMANDI DISPONIBILI (Scrivi nel formato CMD:CAMPO:VALORE)
+    =========================================================
+    -- SERVI (Valori 45-135) --
+    SERVO_ISX / SERVO_IDX / SERVO_ESX / SERVO_EDX : <angolo>
+    
+    -- STATO SERVI (Nessun valore necessario) --
+    SERVO_ISX_ATTACH / SERVO_ISX_DETACH (ecc. per gli altri)
+    
+    -- CONTROLLI --
+    RELE_ON / RELE_OFF
+    MODO : <1 (Manuale) o 2 (Auto)>
+    GAS  : <1000 - 2000>
+    
+    -- SICUREZZE --
+    SICUREZZA_SCHIANTO_ON / OFF
+    SICUREZZA_ALIMENTAZIONE_ON / OFF
+    SICUREZZA_SERVI_ON / OFF
+    SICUREZZA_TEMP_ON / OFF
+    
+    -- NAVIGAZIONE --
+    SET_LATITUDE  : <float>
+    SET_LONGITUDE : <float>
+    SET_ALTITUDE  : <float>
+    =========================================================
+    Digita 'HELP' per rivedere questa lista.
+    """
+    print(help_text)
+    
+    while True:
+        try:
+            # Rimane in attesa dell'input dell'utente sul terminale
+            raw_input = input()
+            if not raw_input.strip():
+                continue
+
+            if raw_input.strip().upper() == 'HELP':
+                print(help_text)
+                continue
+
+            # Pulizia e normalizzazione dell'input:
+            # "cMd   :   SET_ALTITUDE  : 200 " -> ["CMD", "SET_ALTITUDE", "200"]
+            parts = [p.strip().upper() for p in raw_input.split(':')]
+            
+            if parts[0] == "CMD":
+                campo = parts[1] if len(parts) > 1 else ""
+                
+                # Se l'utente non inserisce un valore (es. "CMD:RELE_ON"),
+                # passiamo "0" di default per non far fallire l'indexOf(':', 4) sul Teensy
+                valore = parts[2] if len(parts) > 2 and parts[2] != "" else "0"
+                
+                if campo:
+                    send_command(campo, valore)
+            else:
+                print("[CLI] Formato errato. Usa CMD:CAMPO:VALORE (es. CMD:SET_ALTITUDE:200)")
+                
+        except Exception as e:
+            print(f"[CLI] Errore di input: {e}")
+
 def main():
     thread_seriale = threading.Thread(target=read_from_serial, daemon=True)
     thread_seriale.start()
+
+    # Thread per l'invio comandi da terminale
+    thread_cli = threading.Thread(target=terminal_cli_thread, daemon=True)
+    thread_cli.start()
 
     while True:
         for event in pygame.event.get():
