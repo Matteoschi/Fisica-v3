@@ -7,7 +7,6 @@
 #include "SBUS.h"
 #include <Adafruit_INA219.h>
 #include <Adafruit_BMP3XX.h>
-#include <SoftwareSerial.h>
 
 //  SENSORI
 TinyGPSPlus gps;
@@ -64,48 +63,55 @@ Adafruit_INA219 sensoreTeensy(0x45);
 //  COSTANTI
 const float VALORE_BATT_MOTORE_BASSA = 11.8f;
 const float VALORE_BATT_TEENSY_BASSA = 4.9f;
+
 const int SOGLIA_G_SCHIANTO=50;
+const int SEMPLE_VALORI_SCHIANTO=3;
+
 const int CENTRO_SERVO  = 90;
 const int MAX_ROLL = 35;
 const int MAX_PITCH  = 20;
+
 const int ALTEZZA_MAX = 120;
 const int ALTEZZA_MIN = 10;
-const int GAS_MINIMO = 1000;
-const int GAS_MASSIMO = 2000;  
-const int GAS_CROCIERA= 1450;   
+
+const int GAS_NEUTRO = 1000;
+const int GAS_MASSIMO = 2000;
+const int GAS_MINIMO = 1200;   
+const int GAS_CROCIERA= 1450; 
+
 const float VELOCITA_CROCIERA  = 60.0;  
 const float VELOCITA_AVVICINAMENTO= 45.0;   
-const float DISTANZA_FRENATA = 150.0;  
+const float DISTANZA_FRENATA = 150.0; 
+
 const int   IMU_CAMPIONI_TARA = 200;
 
 const float T_MOTORE_THROTTLE_START = 70.0f;  
 const float T_MOTORE_THROTTLE_END  = 90.0f; 
-const int   GAS_THROTTLE_MIN = 1200; 
-
-const int SEMPLE_VALORI_SCHIANTO=3;
 
 const float ALPHA_LIDAR = 0.25f;
-const float MARGINE_SICUREZZA_LIDAR = 6.0f;
+const float ALTEZZA_MAX_LIDAR = 6.0f;
+
+const float  alpha_vel= 0.7; 
 
 //  NAVIGAZIONE
 double TARGET_LAT = 41.902782;
 double TARGET_LON = 12.496366;
 float  ALTITUDINE_TARGET = 40.0;
 
-float Global_altitutudine_lidar = -1.0;  
-float Global_altitudine_baro = 0.0;     
-float Global_altitudine = 0.0;          // Fuso LIDAR + Baro
-float set_up_gps_alt = 0.0;              // Dal barometro in setup
+float G_altitudine_lidar = -1.0;  
 float set_up_lidar_alt = 0.0;            // Dal LIDAR in setup
-float global_altitudineDiPartenza = 0.0;
-float global_targetRoll  = 0.0;
-float global_distanzaDalTarget = 0.0;
-float global_rottaVersoTarget = 0.0;
-float global_errore_rotta  = 0.0;
-float Global_atltitudine_gps = 0.0;
-float Velocita_pitot_Ms = 0.0;
-float alpha_vel= 0.7; 
-float Velocita_stimata_Ms = 0.0;
+float G_altitudine_baro = 0.0;   
+float set_up_gps_alt = 0.0;              // Dal barometro in setup  
+float G_altitudine = 0.0;          // Fuso LIDAR + Baro
+
+float G_tara_altitudine = 0.0;
+float G_targetRoll  = 0.0;
+float G_distanzaDalTarget = 0.0;
+float G_rottaVersoTarget = 0.0;
+float G_errore_rotta  = 0.0;
+
+float G_Velocità_MS = 0.0;
+
 float offsetRoll  = 0.0f;
 float offsetPitch = 0.0f;
 float offsetyaw   = 0.0f;
@@ -153,7 +159,7 @@ static int contatoreImpatto = 0;
 const int PIN_LED_ROSSO_ALARM = 2; // Allarmi come moduli mancanti / Batteria
 const int PIN_LED_VERDE_GPS = 3; // GPS Fix e settaggio pitot
 const int PIN_LED_BLU_PID  = 4; // Modalità AUTO pid e settaggio barometro
-const int PIN_BUZZER = 12;     // Cambiato da 5 (conflitto LIDAR)
+const int PIN_BUZZER = 12;     
 const int PIN_RELE = 20;
 
 //  FLAGS STATO SISTEMA
@@ -284,7 +290,9 @@ void setup()
             while (millis() - t0 < 3000) {
                 if (Serial2.available() >= 9) {
                     if (Serial2.read() == 0x59 && Serial2.read() == 0x59) {
-                        for (int i = 0; i < 7; i++) Serial2.read();
+                        for (int i = 0; i < 7; i++) {
+                            Serial2.read();
+                        }
                         lidarOk = true;
                         break;
                     }
@@ -381,7 +389,6 @@ void setup()
                 for (int i = 0; i < 20; i++) {
                     segnalaCalibrazione(PIN_LED_BLU_PID);
                     
-                    // LETTURA SINGOLA OTTIMIZZATA
                     float altIstantanea = barometro.readAltitude(1013.25);
                     
                     // VALIDAZIONE HARDWARE (Limiti ASL estremi)
@@ -413,14 +420,14 @@ void setup()
                 
                 if (set_up_gps_alt < 5.0 && set_up_lidar_alt < 5.0 && set_up_lidar_alt > 0.0 && lidarOk) {
                     
-                    global_altitudineDiPartenza = mediaBaroASL - set_up_lidar_alt;
+                    G_tara_altitudine = mediaBaroASL - set_up_lidar_alt;
                     Serial.print("OK (Tara ASL corretta da LIDAR: ");
                 } else {
-                    global_altitudineDiPartenza = mediaBaroASL;
+                    G_tara_altitudine = mediaBaroASL;
                     Serial.print("OK (Tara ASL standard: ");
                 }
                 
-                Serial.print(global_altitudineDiPartenza, 1);
+                Serial.print(G_tara_altitudine, 1);
                 Serial.println(" m)");
                 segnalaOK();
                 
@@ -576,7 +583,7 @@ void  inizializzazione_servo(){
 
 void inizializzazione_motore(){
     motore.attach(pinMotore);
-    motore.writeMicroseconds(GAS_MINIMO);
+    motore.writeMicroseconds(GAS_NEUTRO);
 }
 
 void loop()
@@ -602,9 +609,7 @@ void loop()
     float angoloYaw   = event.orientation.x;
 
     // 5. lettura barometro
-    float altitudineAttuale  = barometro.readAltitude(1013.25);
-    Global_atltitudine_gps = altitudineAttuale - global_altitudineDiPartenza;
-    Global_altitudine_baro = Global_atltitudine_gps;  // Backup barometro
+    G_altitudine_baro = barometro.readAltitude(1013.25) - G_tara_altitudine;
     
     // 5b. AGGIORNA LIDAR E ALTITUDINE FUSA
     aggiornaLidar();
@@ -619,6 +624,7 @@ void loop()
     // 7. pitot – lettura velocità aria
     int lettura_dal_pin_pitot= analogRead(PIN_ARIA);
     lettura_dal_pin_pitot = constrain(lettura_dal_pin_pitot, 0, 1023);
+    float Velocita_pitot_Ms = 0.0;
     float differenza= (float)lettura_dal_pin_pitot - VALORE_ZERO;
     if (differenza < 0) {
         differenza = 0;
@@ -636,11 +642,11 @@ void loop()
     }
 
     if (gpsSpeedValido && Velocita_pitot_Ms > 0.1f) {
-        Velocita_stimata_Ms = (alpha_vel * Velocita_pitot_Ms) + ((1.0 - alpha_vel) * velocita_gps_Ms);
+        G_Velocità_MS = (alpha_vel * Velocita_pitot_Ms) + ((1.0 - alpha_vel) * velocita_gps_Ms);
     } else if (gpsSpeedValido) {
-        Velocita_stimata_Ms = velocita_gps_Ms;
+        G_Velocità_MS = velocita_gps_Ms;
     } else {
-        Velocita_stimata_Ms = Velocita_pitot_Ms; 
+        G_Velocità_MS = Velocita_pitot_Ms; 
     }
 
     aggiornaNavigazione(angoloYaw);
@@ -648,7 +654,7 @@ void loop()
     // 9. PREPARAZIONE DATI MOTORE
     float targetVelocita = 0.0;
     int gasDiBase = 0;
-    if (global_distanzaDalTarget > DISTANZA_FRENATA) {
+    if (G_distanzaDalTarget > DISTANZA_FRENATA) {
         targetVelocita = VELOCITA_CROCIERA;
         gasDiBase= GAS_CROCIERA;
     } else {
@@ -658,7 +664,7 @@ void loop()
 
     int correzionePitch  = 0;
     int correzioneRoll   = 0;
-    int comandoGasFinale = GAS_MINIMO;
+    int comandoGasFinale = GAS_NEUTRO;
 
     // 1 = Manuale, 2 = Auto, 3 = Failsafe
     if (ricevente.read(&canaliRC[0], &failsafe, &pacchettoPerso)) {
@@ -711,8 +717,8 @@ void loop()
     }
 
     if (!schiantoBloccato && global_modalitaVolo == 1 && !failsafe) {
-        // Gas: da 172-1811 a GAS_MINIMO-GAS_MASSIMO (limiti meccanici motore)
-        comandoGasFinale = constrain(map(canaliRC[2], 172, 1811, GAS_MINIMO, GAS_MASSIMO), GAS_MINIMO, GAS_MASSIMO);
+        // Gas: da 172-1811 a GAS_NEUTRO-GAS_MASSIMO (limiti meccanici motore)
+        comandoGasFinale = constrain(map(canaliRC[2], 172, 1811, GAS_NEUTRO, GAS_MASSIMO), GAS_NEUTRO, GAS_MASSIMO);
         correzioneRoll   = constrain(map(canaliRC[0], 172, 1811, -MAX_ROLL,   MAX_ROLL),   -MAX_ROLL,  MAX_ROLL);
         correzionePitch  = constrain(map(canaliRC[1], 172, 1811,  MAX_PITCH, -MAX_PITCH),  -MAX_PITCH, MAX_PITCH);
         if (statoAttuale != ultimoStatoStampato) {
@@ -731,13 +737,13 @@ void loop()
                 ultimoStatoStampato = statoAttuale;
             }
         }
-        calcolaPID(ALTITUDINE_TARGET, global_targetRoll,angoloPitch, angoloRoll,Velocita_stimata_Ms *3.6, targetVelocita,gasDiBase,correzionePitch, correzioneRoll, comandoGasFinale);
+        calcolaPID(ALTITUDINE_TARGET, G_targetRoll,angoloPitch, angoloRoll,G_Velocità_MS *3.6, targetVelocita,gasDiBase,correzionePitch, correzioneRoll, comandoGasFinale);
     }
-    int gasEffettivo = GAS_MINIMO;  
+    int gasEffettivo = GAS_NEUTRO;  
 
     if (statoSchiantoRilevato) {
-        motore.writeMicroseconds(GAS_MINIMO);
-        gasEffettivo = GAS_MINIMO;
+        motore.writeMicroseconds(GAS_NEUTRO);
+        gasEffettivo = GAS_NEUTRO;
     } else {
         gestisci_allarmi();
         applicaMixer4Servi(correzionePitch, correzioneRoll);
@@ -753,7 +759,7 @@ void loop()
     angoloPitch, angoloRoll, angoloYaw,
     Velocita_pitot_Ms * 3.6f,
     velocita_gps_Ms   * 3.6f,
-    Velocita_stimata_Ms * 3.6f,
+    G_Velocità_MS * 3.6f,
     correzionePitch, correzioneRoll, gasEffettivo);
 }
 //  MIXER 4 SERVI
@@ -838,36 +844,36 @@ void applicaMixer4Servi(int pitch, int roll){
 void aggiornaNavigazione(float angoloYaw)
 {
     if (gps.location.isValid()) {
-        global_distanzaDalTarget = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), TARGET_LAT, TARGET_LON);
+        G_distanzaDalTarget = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), TARGET_LAT, TARGET_LON);
 
         // Angolo in GRADI (0=Nord, 90=Est, 180=Sud, 270=Ovest) verso il target
-        global_rottaVersoTarget = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), TARGET_LAT, TARGET_LON);
+        G_rottaVersoTarget = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), TARGET_LAT, TARGET_LON);
 
         // Differenza tra direzione target e direzione attuale (yaw)
-        global_errore_rotta = global_rottaVersoTarget - angoloYaw;
+        G_errore_rotta = G_rottaVersoTarget - angoloYaw;
 
         // Via più breve per girare (normalizzazione ±180°)
-        if(global_errore_rotta >  180.0) {
-            global_errore_rotta -= 360.0;
-        }else if (global_errore_rotta < -180.0) {
-            global_errore_rotta += 360.0;
+        if(G_errore_rotta >  180.0) {
+            G_errore_rotta -= 360.0;
+        }else if (G_errore_rotta < -180.0) {
+            G_errore_rotta += 360.0;
         }
         // L1 Calcola l'accelerazione laterale necessaria per curvare  verso la rotta: a_lat = 2*V^2/l1 *sin(eta)
-        float velPerCalcolo = max(Velocita_stimata_Ms, 1.0f);
+        float velPerCalcolo = max(G_Velocità_MS, 1.0f);
         float L1 = max(velPerCalcolo * 4.0f, 1.0f); 
-        float eta = radians(global_errore_rotta);
+        float eta = radians(G_errore_rotta);
         float a_lat = (2 * velPerCalcolo * velPerCalcolo / L1) * sin(eta);
         float rollRad = atan(a_lat / 9.81);
-        global_targetRoll = constrain(degrees(rollRad), -MAX_ROLL, MAX_ROLL);
+        G_targetRoll = constrain(degrees(rollRad), -MAX_ROLL, MAX_ROLL);
 
         Serial.print("Target a: ");
-        Serial.print(global_distanzaDalTarget);
+        Serial.print(G_distanzaDalTarget);
         Serial.print(" metri | Direzione bussola: ");
-        Serial.print(global_rottaVersoTarget);
+        Serial.print(G_rottaVersoTarget);
         Serial.print(" gradi | Errore rotta: ");
-        Serial.print(global_errore_rotta);
+        Serial.print(G_errore_rotta);
         Serial.print(" gradi | Target Roll calcolato: ");
-        Serial.println(global_targetRoll);
+        Serial.println(G_targetRoll);
     } else {
         Serial.println("GPS: In attesa di segnale valido (FIX)...");
     }
@@ -1011,7 +1017,7 @@ void inviaTelemetria(float pitch, float roll, float yaw, float velPitotKmh, floa
         TELEMETRIA.print(pitch, 1);                TELEMETRIA.print(","); // 10. Pitch reale
         TELEMETRIA.print(roll, 1);                 TELEMETRIA.print(","); // 11. Roll reale
         TELEMETRIA.print(yaw, 1);                  TELEMETRIA.print(","); // 12. Yaw reale (Bussola)
-        TELEMETRIA.print(Global_altitudine, 1); TELEMETRIA.print(","); // 13. Altitudine relativa
+        TELEMETRIA.print(G_altitudine, 1); TELEMETRIA.print(","); // 13. Altitudine relativa
         
         // --- VELOCITÀ ---
         TELEMETRIA.print(velPitotKmh, 1);          TELEMETRIA.print(","); // 14. Velocità Aria (Pitot)
@@ -1019,9 +1025,9 @@ void inviaTelemetria(float pitch, float roll, float yaw, float velPitotKmh, floa
         TELEMETRIA.print(velStimataKmh, 1);        TELEMETRIA.print(","); // 16. Velocità Fusa (Pitot+GPS)
         
         // --- NAVIGAZIONE ---
-        TELEMETRIA.print(global_distanzaDalTarget, 0); TELEMETRIA.print(","); // 17. Distanza target (m)
-        TELEMETRIA.print(global_rottaVersoTarget, 1);  TELEMETRIA.print(","); // 18. Rotta target (Gradi)
-        TELEMETRIA.print(global_targetRoll, 1);        TELEMETRIA.print(","); // 19. Rollio comandato da L1
+        TELEMETRIA.print(G_distanzaDalTarget, 0); TELEMETRIA.print(","); // 17. Distanza target (m)
+        TELEMETRIA.print(G_rottaVersoTarget, 1);  TELEMETRIA.print(","); // 18. Rotta target (Gradi)
+        TELEMETRIA.print(G_targetRoll, 1);        TELEMETRIA.print(","); // 19. Rollio comandato da L1
         
         // --- INPUT RADIOCOMANDO (Grezzi 172-1811) ---
         TELEMETRIA.print(canaliRC[1]);             TELEMETRIA.print(","); // 20. RC Pitch
@@ -1076,18 +1082,18 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     float targetPitch_Auto = 0.0;
     int gasCorrente = gasDiBase; 
 
-    if (Global_altitudine > ALTEZZA_MAX) {
+    if (G_altitudine > ALTEZZA_MAX) {
         targetPitch_Auto = -8.0;
-        gasCorrente = GAS_MINIMO + 5; 
+        gasCorrente = GAS_MINIMO; 
         pid_sommaErroriAlt =  0.0;  
         pid_errorePassatoAlt=  0.0;
-    } else if (Global_altitudine < ALTEZZA_MIN) {
+    } else if (G_altitudine < ALTEZZA_MIN) {
         targetPitch_Auto = 12.0;
         gasCorrente = GAS_MASSIMO - 10; 
         pid_sommaErroriAlt =  0.0;
         pid_errorePassatoAlt =  0.0;
     } else {
-        float erroreAltitudine = targetAltitudine - Global_altitudine;
+        float erroreAltitudine = targetAltitudine - G_altitudine;
         erroreAltitudine = constrain(erroreAltitudine, -20.0, 20.0);
 
         float P_alt = Kp_alt * erroreAltitudine;
@@ -1151,10 +1157,9 @@ void calcolaPID(float targetAltitudine, float targetRoll,
 
 void verifica_drone_in_volo() {          
     if (!droneInVolo) {
-        bool velocitaSufficiente   = (Velocita_stimata_Ms > SOGLIA_VELO_DECOLLO_MS);
-        bool altitudineSufficiente = (Global_altitudine > SOGLIA_ALT_DECOLLO_M);
-        bool velocitaConfermata    = gps.speed.isValid() || (Velocita_pitot_Ms > 0.5f);
-        bool decolloValido         = altitudineSufficiente && velocitaSufficiente && velocitaConfermata;
+        bool velocitaSufficiente   = (G_Velocità_MS > SOGLIA_VELO_DECOLLO_MS);
+        bool altitudineSufficiente = (G_altitudine > SOGLIA_ALT_DECOLLO_M);
+        bool decolloValido         = altitudineSufficiente && velocitaSufficiente;
 
         if (decolloValido) {
             if (timestampDecollo == 0) {
@@ -1177,7 +1182,7 @@ void gestisciSchianto() {
         return;
     }
     if (statoSchiantoRilevato) {
-        motore.writeMicroseconds(GAS_MINIMO); 
+        motore.writeMicroseconds(GAS_NEUTRO); 
         return; 
     }
 
@@ -1194,7 +1199,7 @@ void gestisciSchianto() {
                 statoSchiantoRilevato = true;
                 schiantoBloccato = true;
                 contatoreImpatto = 0;
-                motore.writeMicroseconds(GAS_MINIMO); 
+                motore.writeMicroseconds(GAS_NEUTRO); 
                 servoInternoSX.detach();
                 servoInternoDX.detach();
                 servoEsternoSX.detach();
@@ -1216,7 +1221,7 @@ void gestisciSchianto() {
 
 void aggiornaLidar() {
   // Solo se sotto margine di sicurezza (atterraggio/volo basso)
-  if (Global_atltitudine_gps > MARGINE_SICUREZZA_LIDAR) {
+  if (G_altitudine_baro > ALTEZZA_MAX_LIDAR) {
     while (Serial2.available()) {
       Serial2.read();  // Svuota buffer
     }
@@ -1245,12 +1250,12 @@ void aggiornaLidar() {
       float distanza_m = distanza_cm / 100.0f;
       
       // Filtro passa-basso: inizializza correttamente al primo valore
-      if (Global_altitutudine_lidar < 0.0f) {
-        Global_altitutudine_lidar = distanza_m;  // Prima lettura
+      if (G_altitudine_lidar < 0.0f) {
+        G_altitudine_lidar = distanza_m;  // Prima lettura
       } else {
-        Global_altitutudine_lidar = ALPHA_LIDAR * distanza_m + (1.0f - ALPHA_LIDAR) * Global_altitutudine_lidar;
+        G_altitudine_lidar = ALPHA_LIDAR * distanza_m + (1.0f - ALPHA_LIDAR) * G_altitudine_lidar;
       }
-      set_up_lidar_alt = Global_altitutudine_lidar;  // Salva per setup
+      set_up_lidar_alt = G_altitudine_lidar;  // Salva per setup
       return;
     }
   }
@@ -1258,10 +1263,10 @@ void aggiornaLidar() {
 
 void altitudine() {
   // Usa LIDAR in volo basso, fallback a barometro
-  if (lidarOk && Global_altitutudine_lidar > 0.0f && Global_atltitudine_gps < MARGINE_SICUREZZA_LIDAR) {
-    Global_altitudine = Global_altitutudine_lidar;  // LIDAR ha priorità in basso
+  if (lidarOk && G_altitudine_lidar > 0.0f && G_altitudine_baro < ALTEZZA_MAX_LIDAR) {
+    G_altitudine = G_altitudine_lidar;  // LIDAR ha priorità in basso
   } else {
-    Global_altitudine = Global_altitudine_baro;    // Barometro come default
+    G_altitudine = G_altitudine_baro;    // Barometro come default
   }
 }
 
@@ -1293,12 +1298,12 @@ int gasMaxTermico() {
         return GAS_MASSIMO;   
     }
     if (Global_Temperatura_motore >= T_MOTORE_THROTTLE_END) {
-        return GAS_THROTTLE_MIN;
+        return GAS_MINIMO;
     }
 
     float t = (Global_Temperatura_motore - T_MOTORE_THROTTLE_START) /
               (T_MOTORE_THROTTLE_END   - T_MOTORE_THROTTLE_START);  
-    int limite = (int)(GAS_MASSIMO - t * (GAS_MASSIMO - GAS_THROTTLE_MIN));
+    int limite = (int)(GAS_MASSIMO - t * (GAS_MASSIMO - GAS_MINIMO));
     return limite;
 }
 
@@ -1404,7 +1409,7 @@ void elaboraComando(const String& cmd) {
     // Gas 
     } else if (campo == "GAS") {
         if (global_modalitaVolo == 1) {
-            motore.writeMicroseconds(constrain(val, GAS_MINIMO, GAS_MASSIMO));   
+            motore.writeMicroseconds(constrain(val, GAS_NEUTRO, GAS_MASSIMO));   
         }
 
     //Modalità di volo
