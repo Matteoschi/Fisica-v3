@@ -7,11 +7,13 @@
 #include "SBUS.h"
 #include <Adafruit_INA219.h>
 #include <Adafruit_BMP3XX.h>
+#include <Bitcraze_PMW3901.h>
 
 //  SENSORI
 TinyGPSPlus gps;
 Adafruit_BNO055  giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
 Adafruit_BMP3XX barometro;
+Bitcraze_PMW3901 flusso_ottico(15);
 
 const int PIN_T_motore=A1;
 float Global_Temperatura_motore = 0.0;
@@ -90,8 +92,10 @@ const float T_MOTORE_THROTTLE_END  = 90.0f;
 
 const float ALPHA_LIDAR = 0.25f;
 const float ALTEZZA_MAX_LIDAR = 6.0f;
+const float ALTEZZA_MAX_SENSORE_OTTICO = 4.0f;
 
 const float  alpha_vel= 0.7; 
+const float COSTANTE_OTTICA = 0.0012;
 
 //  NAVIGAZIONE
 double TARGET_LAT = 41.902782;
@@ -111,6 +115,8 @@ float G_rottaVersoTarget = 0.0;
 float G_errore_rotta  = 0.0;
 
 float G_Velocità_MS = 0.0;
+float G_vel_x_optical_sensor = 0.0;
+float G_vel_y_optical_sensor = 0.0;
 
 float offsetRoll  = 0.0f;
 float offsetPitch = 0.0f;
@@ -164,6 +170,7 @@ const int PIN_RELE = 20;
 
 //  FLAGS STATO SISTEMA
 bool imuPronto       = false;
+bool flusso_otticoOK = false;
 bool lidarOk = false;
 bool baroPronto      = false;
 bool pitotCalibrato  = false;
@@ -209,8 +216,9 @@ void inizializzazione_motore();
 void comandi_da_terra();                       
 void elaboraComando(const String& cmd);     
 void aggiornaLidar();
-void altitudine();
+void altitudine_velocità(float Velocita_pitot_Ms , float velocita_gps_Ms);
 int  gasMaxTermico();   
+void velocità_flusso_ottico(float angoloYaw);
 
 void segnalaOK() {
     digitalWrite(PIN_LED_VERDE_GPS, HIGH);
@@ -233,8 +241,6 @@ void segnalaCalibrazione(int pin_led) {
     digitalWrite(pin_led, !digitalRead(pin_led));
     tone(PIN_BUZZER, 1000, 30);
 }
-
-
 void setup()
 {
     Serial.begin(115200);  
@@ -283,6 +289,20 @@ void setup()
         Serial.print  (" / ");
         Serial.println(MAX_TENTATIVI);
         Serial.println("-----------------------------------------");
+
+
+        if (!flusso_otticoOK){
+            Serial.println("[ ] Flusso Ottico PMW3901 ........... ");
+            if (flusso_ottico.begin()) {
+                Serial.println("[OK] Flusso Ottico PMW3901");
+                flusso_otticoOK = true; 
+            } else {
+                Serial.println("ERRORE sensore flusso ottico (cavi SPI?)");
+                segnalaErrore();
+            }
+        } else {
+            Serial.println("[OK] Flusso Ottico PMW3901");
+        }
 
         if (!lidarOk) {
             Serial.println("[ ] TF-Luna LIDAR .............. ");
@@ -598,58 +618,40 @@ void loop()
         gps.encode(GPS_SERIAL.read());
     }
 
-    // 2. monitoraggio voltaggio teensy e motore
     diagnosticaServi();
 
-    // 3. lettura giroscopio (IMU)
     sensors_event_t event;
     giroscopio.getEvent(&event);
     float angoloPitch = event.orientation.y - offsetPitch;
     float angoloRoll  = event.orientation.z - offsetRoll;
     float angoloYaw   = event.orientation.x;
 
-    // 5. lettura barometro
-    G_altitudine_baro = barometro.readAltitude(1013.25) - G_tara_altitudine;
-    
-    // 5b. AGGIORNA LIDAR E ALTITUDINE FUSA
-    aggiornaLidar();
-    altitudine();
-
-    // 6. controllo temperature
     temp_aria_barometro = barometro.temperature;
     float voltaggio_Sensore_motore = analogRead(PIN_T_motore) * (3.3 / 1023.0);
     Global_Temperatura_motore = (voltaggio_Sensore_motore - 0.5) * 100.0;
 
-
     // 7. pitot – lettura velocità aria
-    int lettura_dal_pin_pitot= analogRead(PIN_ARIA);
-    lettura_dal_pin_pitot = constrain(lettura_dal_pin_pitot, 0, 1023);
-    float Velocita_pitot_Ms = 0.0;
+    int lettura_dal_pin_pitot = constrain(analogRead(PIN_ARIA), 0, 1023);
+    float Velocita_pitot_Ms = 0.0f;
     float differenza= (float)lettura_dal_pin_pitot - VALORE_ZERO;
-    if (differenza < 0) {
-        differenza = 0;
-    }
-    float pressionePascal = differenza * FATTORE_CONVERSIONE_PA;
-    if (pressionePascal >0){
-        Velocita_pitot_Ms= sqrt((2.0 * pressionePascal) / DENSITA_ARIA);
+    if (differenza > 0.0f) {
+        float pressionePascal = differenza * FATTORE_CONVERSIONE_PA;
+        Velocita_pitot_Ms = sqrtf((2.0f * pressionePascal) / DENSITA_ARIA);
     }
 
-    //8. gps calcolo velocità (groundspeed)
-    float velocita_gps_Ms = 0.0;
-    bool gpsSpeedValido = gps.speed.isValid();
-    if (gpsSpeedValido) {
-        velocita_gps_Ms = gps.speed.kmph() / 3.6;
-    }
-
-    if (gpsSpeedValido && Velocita_pitot_Ms > 0.1f) {
-        G_Velocità_MS = (alpha_vel * Velocita_pitot_Ms) + ((1.0 - alpha_vel) * velocita_gps_Ms);
-    } else if (gpsSpeedValido) {
-        G_Velocità_MS = velocita_gps_Ms;
+    float velocita_gps_Ms = 0.0f;
+    if (gps.speed.isValid()) {
+        velocita_gps_Ms = gps.speed.mps();
     } else {
-        G_Velocità_MS = Velocita_pitot_Ms; 
+        velocita_gps_Ms = 0.0f;
     }
 
-    aggiornaNavigazione(angoloYaw);
+    G_altitudine_baro = barometro.readAltitude(1013.25f) - G_tara_altitudine;
+
+    aggiornaLidar();
+    altitudine_velocità(Velocita_pitot_Ms, velocita_gps_Ms);
+    aggiornaNavigazione(angoloYaw);    
+    velocità_flusso_ottico(angoloYaw);
 
     // 9. PREPARAZIONE DATI MOTORE
     float targetVelocita = 0.0;
@@ -701,7 +703,7 @@ void loop()
         statoAttuale = global_modalitaVolo;
     }
 
-    // 10. RESET PID AL CAMBIO DI MODALITÀ 
+    //RESET PID AL CAMBIO DI MODALITÀ 
     static int modalitaPrecedente = 1;
     if (statoAttuale != modalitaPrecedente) {
         pid_sommaErroriAlt  = 0.0;  pid_errorePassatoAlt = 0.0;
@@ -838,9 +840,7 @@ void applicaMixer4Servi(int pitch, int roll){
         servoEsternoDX.write(posEstDX);
     }
 }
-// ============================================================
 //  NAVIGAZIONE GPS
-// ============================================================
 void aggiornaNavigazione(float angoloYaw)
 {
     if (gps.location.isValid()) {
@@ -1159,9 +1159,8 @@ void verifica_drone_in_volo() {
     if (!droneInVolo) {
         bool velocitaSufficiente   = (G_Velocità_MS > SOGLIA_VELO_DECOLLO_MS);
         bool altitudineSufficiente = (G_altitudine > SOGLIA_ALT_DECOLLO_M);
-        bool decolloValido         = altitudineSufficiente && velocitaSufficiente;
 
-        if (decolloValido) {
+        if (velocitaSufficiente && altitudineSufficiente) {
             if (timestampDecollo == 0) {
                 timestampDecollo = millis();
             }
@@ -1175,6 +1174,7 @@ void verifica_drone_in_volo() {
         }
     }
 }
+
 
 void gestisciSchianto() {
     if (!schianto_sicurezza) {
@@ -1225,7 +1225,6 @@ void aggiornaLidar() {
     while (Serial2.available()) {
       Serial2.read();  // Svuota buffer
     }
-    // Mantieni ultimo valore valido per continuità
     return;
   }
 
@@ -1261,13 +1260,53 @@ void aggiornaLidar() {
   }
 }
 
-void altitudine() {
-  // Usa LIDAR in volo basso, fallback a barometro
-  if (lidarOk && G_altitudine_lidar > 0.0f && G_altitudine_baro < ALTEZZA_MAX_LIDAR) {
-    G_altitudine = G_altitudine_lidar;  // LIDAR ha priorità in basso
-  } else {
-    G_altitudine = G_altitudine_baro;    // Barometro come default
-  }
+void velocità_flusso_ottico(float angoloYaw) {
+    static unsigned long tempoPassatoFlussoOttico = 0;
+
+    int dx = 0;
+    int dy = 0;
+    flusso_ottico.readMotionCount(&dx, &dy);
+
+    unsigned long now = millis();
+    float dt = (now - tempoPassatoFlussoOttico) / 1000.0f;
+    tempoPassatoFlussoOttico = now;  
+
+
+    if (dt <= 0.0f || G_altitudine > ALTEZZA_MAX_SENSORE_OTTICO) {
+        G_vel_x_optical_sensor = -1.0f;
+        G_vel_y_optical_sensor = -1.0f;
+        return;
+    }
+
+    float v_x = (dx * COSTANTE_OTTICA * G_altitudine) / dt;
+    float v_y = (dy * COSTANTE_OTTICA * G_altitudine) / dt;
+
+    float yaw_rad = radians(angoloYaw);
+    G_vel_x_optical_sensor = v_x * cos(yaw_rad) - v_y * sin(yaw_rad);
+    G_vel_y_optical_sensor = v_x * sin(yaw_rad) + v_y * cos(yaw_rad);
+}
+
+void altitudine_velocità(float Velocita_pitot_Ms, float velocita_gps_Ms) {
+    if (lidarOk && G_altitudine_lidar > 0.0f && G_altitudine_baro < ALTEZZA_MAX_LIDAR) {
+        G_altitudine = G_altitudine_lidar;
+    } else {
+        G_altitudine = G_altitudine_baro;
+    }
+
+    if (gps.speed.isValid()) {
+        if (Velocita_pitot_Ms > 0.1f) {
+            G_Velocità_MS = (alpha_vel * Velocita_pitot_Ms) 
+                          + ((1.0f - alpha_vel) * velocita_gps_Ms);
+        } else {
+            G_Velocità_MS = velocita_gps_Ms;
+        }
+    } else {
+        G_Velocità_MS = Velocita_pitot_Ms;
+    }
+    if (G_vel_x_optical_sensor >= 0.0f && G_vel_y_optical_sensor >= 0.0f
+        && G_altitudine < ALTEZZA_MAX_SENSORE_OTTICO) {
+        G_Velocità_MS = sqrtf(G_vel_x_optical_sensor * G_vel_x_optical_sensor + G_vel_y_optical_sensor * G_vel_y_optical_sensor);
+    }
 }
 
 void gestisciAlimentazione() {
@@ -1305,6 +1344,10 @@ int gasMaxTermico() {
               (T_MOTORE_THROTTLE_END   - T_MOTORE_THROTTLE_START);  
     int limite = (int)(GAS_MASSIMO - t * (GAS_MASSIMO - GAS_MINIMO));
     return limite;
+}
+
+void atterraggio(){
+
 }
 
 void comandi_da_terra() {
