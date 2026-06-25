@@ -165,7 +165,7 @@ static int contatoreImpatto = 0;
 const int PIN_LED_ROSSO_ALARM = 2; // Allarmi come moduli mancanti / Batteria
 const int PIN_LED_VERDE_GPS = 3; // GPS Fix e settaggio pitot
 const int PIN_LED_BLU_PID  = 4; // Modalità AUTO pid e settaggio barometro
-const int PIN_BUZZER = 29;     
+const int PIN_BUZZER = 33;     
 const int PIN_RELE = 20;
 
 //  FLAGS STATO SISTEMA
