@@ -13,9 +13,9 @@
 TinyGPSPlus gps;
 Adafruit_BNO055  giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
 Adafruit_BMP3XX barometro;
-Bitcraze_PMW3901 flusso_ottico(15);
+Bitcraze_PMW3901 flusso_ottico(25);
 
-const int PIN_T_motore=A1;
+const int PIN_T_motore=A12;
 float Global_Temperatura_motore = 0.0;
 float temp_aria_barometro = 0.0; 
 
@@ -30,7 +30,7 @@ float temp_aria_barometro = 0.0;
 unsigned long timerTelemetria = 0;
 
 //  RICEVENTE SBUS (FrSky)
-SBUS   ricevente(Serial3);
+SBUS   ricevente(Serial7);
 uint16_t canaliRC[16];
 bool failsafe   = false;
 bool pacchettoPerso = false;
@@ -43,9 +43,9 @@ const float FATTORE_CONVERSIONE_PA = 3.22;
 
 //  SERVO
 const int pinIntSX  = 6;
-const int pinIntDX  = 7;
-const int pinEstSX  = 8;
-const int pinEstDX  = 9;
+const int pinIntDX  = 22;
+const int pinEstSX  = 23;
+const int pinEstDX  = 24;
 const int pinMotore = 10;
 
 Servo servoInternoSX;  // flap interno sinistro  (pitch)
@@ -165,7 +165,7 @@ static int contatoreImpatto = 0;
 const int PIN_LED_ROSSO_ALARM = 2; // Allarmi come moduli mancanti / Batteria
 const int PIN_LED_VERDE_GPS = 3; // GPS Fix e settaggio pitot
 const int PIN_LED_BLU_PID  = 4; // Modalità AUTO pid e settaggio barometro
-const int PIN_BUZZER = 12;     
+const int PIN_BUZZER = 29;     
 const int PIN_RELE = 20;
 
 //  FLAGS STATO SISTEMA
