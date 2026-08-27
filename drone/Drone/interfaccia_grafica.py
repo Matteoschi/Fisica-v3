@@ -1,8 +1,10 @@
+
 import pygame
 import sys
 import serial  
 import threading
 import os
+from collections import deque
 
 SERIAL_PORT = "COM3"  
 BAUD_RATE = 9600
@@ -10,7 +12,7 @@ BAUD_RATE = 9600
 pygame.init()
 pygame.mixer.init()
 
-W, H   = 1280, 720
+W, H   = 1280, 900
 screen = pygame.display.set_mode((W, H))
 pygame.display.set_caption("GCS – Primary Flight Display")
 clock  = pygame.time.Clock()
@@ -26,10 +28,14 @@ C_DIM    = ( 82,  98, 126)  # testo secondario / etichette
 C_WHITE  = (242, 246, 255)  # testo luminoso / valori
 C_GREEN  = ( 40, 210,  88)  # stato OK
 C_YELLOW = (255, 200,   0)  # throttle / HUD
+C_ORANGE = (255, 140,   0)  # diagnostica: livello WARNING (🟠)
 C_RED    = (218,  48,  48)  # allarme / errore
 C_SKY    = ( 28,  96, 178)  # cielo orizzonte
 C_GROUND = (124,  80,  30)  # terra orizzonte
 C_CROSS  = (255, 210,   0)  # crosshair orizzonte
+C_GRAPH_BARO   = (  0, 188, 255)  # linea grafico: baro
+C_GRAPH_LIDAR  = ( 40, 210,  88)  # linea grafico: lidar
+C_GRAPH_FUSA   = (255, 200,   0)  # linea grafico: quota fusa
 F_HEAD  = pygame.font.SysFont("consolas", 21, bold=True)  # header principale
 F_TITLE = pygame.font.SysFont("consolas", 13, bold=True)  # titoli pannelli
 F_VAL   = pygame.font.SysFont("consolas", 15, bold=True)  # valori numerici
@@ -108,6 +114,13 @@ VBAR_MOTOR_MAX  = 16.8
 # ── Distanza target (m)
 DIST_TGT_WARN = 150   # < soglia → GIALLO
 
+# ── Errore rotta (°)
+HDG_ERR_WARN = 30     # >= soglia (assoluto) → GIALLO
+HDG_ERR_CRIT = 90     # >= soglia (assoluto) → ROSSO
+
+# ── Storico grafici (numero campioni telemetria conservati)
+HIST_LEN = 120
+
 # ── Satelliti GPS 
 SAT_MIN = 5           # < soglia → ROSSO
 
@@ -134,6 +147,10 @@ VSERV_PANEL = pygame.Rect(878, 320, 378, 193)
 NAV_PANEL   = pygame.Rect(428, 522, 424, 140)
 ORIENTATION_PANEL = pygame.Rect(428, 391, 424, 100)
 BATTERY_PANNEL =pygame.Rect(878, 522, 378, 180)
+
+# ── Nuova riga in basso: diagnostica sensori/navigazione avanzata + grafico quote
+DIAG_PANEL      = pygame.Rect(24, 712, 1232, 100)
+ALT_GRAPH_PANEL = pygame.Rect(644, 712, 612, 172)
 
 # ── Colonne servi nel pannello SERVI
 SERVI_X   = SERVI_PANEL.x + 28
@@ -189,7 +206,277 @@ T = {
     "lat":             0.0,
     "lon":             0.0,
     "relay":           False,
+    "opt_vx":          0.0,
+    "opt_vy":          0.0,
+    "sensor_optflow_ok": False,
+    "sensor_lidar_ok":   False,
+    "sensor_packet_lost": False,
+    "heading_error":   0.0,
+    "thermal_limit":   GAS_MASSIMO,
+    "alt_lidar_raw":   0.0,
+    "alt_baro_raw":    0.0,
 }
+
+# Storici per i grafici (aggiornati ad ogni pacchetto telemetria valido)
+HIST_BARO  = deque(maxlen=HIST_LEN)
+HIST_LIDAR = deque(maxlen=HIST_LEN)
+HIST_FUSA  = deque(maxlen=HIST_LEN)
+
+# ================================================================
+#  SISTEMA DIAGNOSTICO CENTRALIZZATO
+#  (analisi soglie/failsafe derivata da main.ino — vedi riepilogo
+#   in fondo al file per la mappatura completa condizione → alert)
+# ================================================================
+import time as _time_mod
+from datetime import datetime as _dt
+
+# Soglie duplicate da main.ino, usate SOLO per la spiegazione al pilota
+# (il firmware resta l'unica fonte di verità per le decisioni di volo)
+FW_VALORE_BATT_MOTORE_BASSA   = 11.8   # V   (VALORE_BATT_MOTORE_BASSA)
+FW_VALORE_BATT_TEENSY_BASSA   = 4.9    # V   (VALORE_BATT_TEENSY_BASSA)
+FW_T_MOTORE_THROTTLE_START    = 70.0   # °C  (T_MOTORE_THROTTLE_START)
+FW_T_MOTORE_THROTTLE_END      = 90.0   # °C  (T_MOTORE_THROTTLE_END)
+FW_GAS_MASSIMO                = 2000   # µs  (GAS_MASSIMO)
+FW_GAS_MINIMO                 = 1200   # µs  (GAS_MINIMO)
+FW_ALTEZZA_MAX_LIDAR          = 6.0    # m   (ALTEZZA_MAX_LIDAR)
+FW_ALTEZZA_MAX_SENSORE_OTTICO = 4.0    # m   (ALTEZZA_MAX_SENSORE_OTTICO)
+FW_SAT_MIN_FIX                = 5      # satelliti minimi per un fix affidabile (soglia GUI, SAT_MIN)
+FW_PITOT_DIFF_ANOMALIA_KMH    = 25.0   # soglia derivata GUI: divergenza pitot/GPS sospetta
+FW_PITOT_DURATA_ANOMALIA_S    = 3.0    # secondi di persistenza richiesti prima di segnalare
+
+LIVELLI = {
+    "CRITICAL": {"icona": "🔴", "colore": C_RED,    "prio": 0, "tag": "CRITICAL"},
+    "WARNING":  {"icona": "🟠", "colore": C_ORANGE, "prio": 1, "tag": "WARNING"},
+    "INFO":     {"icona": "🟡", "colore": C_YELLOW, "prio": 2, "tag": "INFO"},
+    "STATUS":   {"icona": "🔵", "colore": C_ACCENT, "prio": 3, "tag": "STATUS"},
+    "OK":       {"icona": "🟢", "colore": C_GREEN,  "prio": 4, "tag": "OK"},
+}
+
+_alert_lock  = threading.Lock()
+alert_attivi = {}                 # codice -> dict con i dettagli dell'alert attivo
+event_log    = deque(maxlen=300)  # (ora_str, livello, testo) — mostrato in GUI (ultimi N) e conservato per lo scroll
+
+def _ora():
+    return _dt.now().strftime("%H:%M:%S")
+
+def add_alert(codice, livello, titolo, descrizione="", causa="", valore="", soglia="",
+              azione="", durata=None, codice_errore=None, dettaglio_terminale=None):
+    """
+    Sistema centralizzato di notifiche diagnostiche.
+    Attiva/aggiorna un alert identificato da 'codice'. La GENERAZIONE di un evento
+    nel log e sul terminale avviene SOLO alla transizione inattivo -> attivo, per
+    evitare di duplicare lo stesso messaggio ad ogni frame; i valori numerici
+    dell'alert vengono comunque aggiornati in tempo reale per la GUI.
+    """
+    global alert_attivi
+    with _alert_lock:
+        nuovo = codice not in alert_attivi
+        alert_attivi[codice] = {
+            "livello": livello, "titolo": titolo, "descrizione": descrizione,
+            "causa": causa, "valore": valore, "soglia": soglia, "azione": azione,
+            "durata": durata, "codice_errore": codice_errore, "ts": _ora(),
+        }
+    if nuovo:
+        icona = LIVELLI[livello]["icona"]
+        event_log.append((_ora(), livello, f"{icona} {titolo}"))
+        print(f"[{_ora()}][{LIVELLI[livello]['tag']}][{codice}] {titolo}")
+        if descrizione:     print(f"    {descrizione}")
+        if causa:            print(f"    Causa: {causa}")
+        if valore:           print(f"    Valore attuale: {valore}")
+        if soglia:           print(f"    Soglia: {soglia}")
+        if azione:           print(f"    Azione consigliata: {azione}")
+        if codice_errore:    print(f"    Codice errore: {codice_errore}")
+        if dettaglio_terminale:
+            print(dettaglio_terminale)
+
+def clear_alert(codice, messaggio_ok=None):
+    """Disattiva un alert. Se era attivo, registra un evento di chiusura (🟢 risolto)."""
+    global alert_attivi
+    with _alert_lock:
+        info = alert_attivi.pop(codice, None)
+    if info is not None:
+        titolo = messaggio_ok or info["titolo"]
+        event_log.append((_ora(), "OK", f"🟢 {titolo} — RISOLTO"))
+        print(f"[{_ora()}][OK][{codice}] {titolo} — risolto")
+
+def alert_principale():
+    """Ritorna l'alert a priorità più alta attualmente attivo, o None se nessun allarme."""
+    if not alert_attivi:
+        return None
+    return max(alert_attivi.items(), key=lambda kv: -LIVELLI[kv[1]["livello"]]["prio"])[1]
+
+def alert_ordinati():
+    """Lista (codice, alert) ordinata per priorità (CRITICAL prima)."""
+    return sorted(alert_attivi.items(), key=lambda kv: LIVELLI[kv[1]["livello"]]["prio"])
+
+def motivi_blocco_manuale(t):
+    """
+    Sistema 'PERCHÉ?': condizioni che main.ino verifica prima di accettare
+    il comando MODO (elaboraComando -> 'if (!failsafe && val>=1 && val<=2)'),
+    più lo stato di blocco da schianto gestito separatamente in loop().
+    """
+    motivi = []
+    if t["alarm_failsafe"]:
+        motivi.append(("FAILSAFE ATTIVO", "Segnale radio assente o pacchetto SBUS non valido"))
+    if t["alarm_crash"]:
+        motivi.append(("SCHIANTO RILEVATO", "Gas forzato al minimo — sblocco possibile solo da radiocomando (canale 5 in basso)"))
+    return motivi
+
+# ── Stato overlay/interazione GUI (popup, pannelli scrollabili) ──────────
+_rect_banner        = pygame.Rect(0, 0, 0, 0)
+_overlay_diagnostica = False
+_overlay_log         = False
+_overlay_perche      = False
+_scroll_diag         = 0
+_scroll_log          = 0
+
+# ── Stato interno per diagnostiche derivate (non presenti direttamente
+#    nella telemetria, calcolate qui a partire dai dati ricevuti) ────────
+_pitot_anomalia_dal = None      # timestamp (ms) di inizio divergenza pitot/GPS persistente
+_relay_prec         = False
+
+
+def evaluate_diagnostics(t):
+    """
+    Valuta ad ogni frame lo stato ricevuto da main.ino e aggiorna gli alert attivi.
+    Ogni condizione qui sotto è ricavata da una soglia/decisione REALMENTE presente
+    nel firmware (vedi commenti); le diagnostiche "derivate" (es. Pitot) sono
+    esplicitamente etichettate come tali e non dichiarano un guasto hardware
+    certo se il firmware non è in grado di rilevarlo direttamente.
+    """
+    global _pitot_anomalia_dal, _relay_prec
+
+    # ── 1. FAILSAFE (bit0 codiceAllarme, main.ino: ricevente.read(...,&failsafe,...)) ──
+    if t["alarm_failsafe"]:
+        add_alert("failsafe", "CRITICAL", "FAILSAFE ATTIVO",
+                   causa="Perdita del segnale radio (pacchetto SBUS non valido)",
+                   valore="Modalità forzata: FAILSAFE (controllo automatico verso il target)",
+                   azione="Verificare trasmettitore/ricevente e ripristinare il collegamento radio.")
+    else:
+        clear_alert("failsafe", "FAILSAFE DISATTIVATO")
+
+    # ── 2. SCHIANTO (bit4, gestisciSchianto(): accelerazione IMU > SOGLIA_G_SCHIANTO) ──
+    if t["alarm_crash"]:
+        add_alert("crash", "CRITICAL", "SCHIANTO RILEVATO",
+                   causa="Accelerazione IMU oltre la soglia di impatto per 3 campioni consecutivi",
+                   valore="Gas: NEUTRO forzato — servi interni staccati",
+                   azione="Sblocco possibile SOLO da radiocomando (canale 5 riportato in basso).")
+    else:
+        clear_alert("crash", "SBLOCCO EMERGENZA ESEGUITO")
+
+    # ── 3. PROTEZIONE TERMICA MOTORE (gasMaxTermico(), soglie 70→90°C) ──
+    if t["thermal_limit"] < FW_GAS_MASSIMO:
+        pct_limite = round((t["thermal_limit"] - FW_GAS_MINIMO) / (FW_GAS_MASSIMO - FW_GAS_MINIMO) * 100)
+        add_alert("motore_termico", "WARNING", "POTENZA MOTORE LIMITATA",
+                   causa="PROTEZIONE TERMICA ATTIVA",
+                   valore=f"Temperatura: {t['t_motor']:.1f} °C  |  Gas erogato: {t['pid_gas']*100:.0f} %",
+                   soglia=f"Inizio limitazione: {FW_T_MOTORE_THROTTLE_START:.0f} °C — Limite massimo: {FW_T_MOTORE_THROTTLE_END:.0f} °C",
+                   azione="Ridurre il regime motore o attendere il raffreddamento. "
+                          f"Gas massimo consentito ora: {t['thermal_limit']} µs (~{pct_limite}%).")
+    else:
+        clear_alert("motore_termico", "POTENZA MOTORE RIPRISTINATA")
+
+    # ── 4. BATTERIA MOTORE (bit1, VALORE_BATT_MOTORE_BASSA = 11.8 V) ──
+    if t["alarm_batt_motor"]:
+        add_alert("batt_motore", "WARNING", "BATTERIA MOTORE BASSA",
+                   causa="Tensione sotto la soglia minima operativa",
+                   valore=f"Tensione: {t['v_motor']:.2f} V",
+                   soglia=f"{FW_VALORE_BATT_MOTORE_BASSA:.2f} V",
+                   azione="Atterrare e sostituire/ricaricare la batteria di potenza.")
+    else:
+        clear_alert("batt_motore", "BATTERIA MOTORE OK")
+
+    # ── 5. BATTERIA TEENSY / AVIONICA (bit3, VALORE_BATT_TEENSY_BASSA = 4.9 V) ──
+    if t["alarm_batt_teensy"]:
+        add_alert("batt_teensy", "WARNING", "BATTERIA AVIONICA (TEENSY) BASSA",
+                   causa="Tensione sotto la soglia minima operativa",
+                   valore=f"Tensione: {t['v_teensy']:.2f} V  |  Failover relè: {'ATTIVO' if t['relay'] else 'in attesa'}",
+                   soglia=f"{FW_VALORE_BATT_TEENSY_BASSA:.2f} V",
+                   azione="Verificare BEC/regolatore avionica; il relè commuta automaticamente sulla batteria motore.")
+    else:
+        clear_alert("batt_teensy", "BATTERIA AVIONICA OK")
+
+    # ── 6. FAILOVER RELÈ (transizione OFF->ON di 'relay', bit2/campo 35) ──
+    if t["relay"] and not _relay_prec:
+        add_alert("relay_on", "INFO", "FAILOVER ALIMENTAZIONE ATTIVATO",
+                   causa="Batteria avionica (Teensy) sotto soglia",
+                   valore="Relè commutato: l'avionica è ora alimentata dalla batteria motore",
+                   azione="Pianificare l'atterraggio per sostituire la batteria avionica.")
+    elif not t["relay"] and _relay_prec:
+        clear_alert("relay_on", "FAILOVER ALIMENTAZIONE DISATTIVATO")
+    _relay_prec = t["relay"]
+
+    # ── 7. SERVI IN ANOMALIA DI CORRENTE (diagnosticaServi(), soglie 0.5–2500 mA) ──
+    servi_ko = [n for n, ok in (("Int SX", t["ok_isx"]), ("Int DX", t["ok_idx"]),
+                                 ("Est SX", t["ok_esx"]), ("Est DX", t["ok_edx"])) if not ok]
+    if servi_ko:
+        add_alert("servi_anomalia", "WARNING" if len(servi_ko) < 4 else "CRITICAL",
+                   "ANOMALIA CORRENTE SERVO",
+                   causa="Corrente fuori range (0.5–2500 mA) per oltre 5 letture consecutive",
+                   valore="Servi in anomalia: " + ", ".join(servi_ko),
+                   azione="Il mixer si è riconfigurato automaticamente sui servi rimanenti; "
+                          "verificare cablaggio/meccanica dei servi indicati appena possibile.")
+    else:
+        clear_alert("servi_anomalia", "SERVI RIPRISTINATI")
+
+    # ── 8. GPS (satelliti/fix — campo 32 satellites, 0 se fix non valido) ──
+    if t["satellites"] == 0:
+        add_alert("gps_fix", "WARNING", "GPS NON DISPONIBILE",
+                   causa="Nessun fix GPS valido",
+                   valore="Satelliti: 0",
+                   azione="Attendere l'acquisizione satellitare; la navigazione automatica non è affidabile.")
+    elif t["satellites"] < FW_SAT_MIN_FIX:
+        add_alert("gps_fix", "INFO", "GPS SEGNALE DEBOLE",
+                   causa="Numero di satelliti sotto il margine di sicurezza consigliato",
+                   valore=f"Satelliti: {t['satellites']}", soglia=f"{FW_SAT_MIN_FIX}",
+                   azione="Nessuna azione immediata richiesta; monitorare la qualità del fix.")
+    else:
+        clear_alert("gps_fix", "GPS FIX ACQUISITO")
+
+    # ── 9. LIDAR — distinzione "non usato per range" vs "guasto" (aggiornaLidar()) ──
+    if not t["sensor_lidar_ok"]:
+        add_alert("lidar", "WARNING", "LIDAR NON DISPONIBILE",
+                   causa="Inizializzazione del sensore non riuscita in fase di avvio",
+                   azione="Il sistema prosegue con il solo barometro per la quota; verificare il TF-Luna al prossimo atterraggio.")
+    elif t["alt_baro_raw"] > FW_ALTEZZA_MAX_LIDAR:
+        add_alert("lidar", "STATUS", "LIDAR NON UTILIZZATO",
+                   causa="Quota fuori dall'intervallo operativo del sensore (normale in crociera)",
+                   valore=f"Quota: {t['alt_baro_raw']:.1f} m", soglia=f"{FW_ALTEZZA_MAX_LIDAR:.0f} m",
+                   azione="Nessuna azione: condizione attesa, non è un errore.")
+    else:
+        clear_alert("lidar")
+
+    # ── 10. FLUSSO OTTICO — stessa distinzione (velocità_flusso_ottico()) ──
+    if not t["sensor_optflow_ok"]:
+        add_alert("optflow", "WARNING", "FLUSSO OTTICO NON DISPONIBILE",
+                   causa="Inizializzazione del sensore PMW3901 non riuscita in fase di avvio",
+                   azione="Il sistema prosegue senza questa sorgente di velocità; verificare i cavi SPI al prossimo atterraggio.")
+    elif t["opt_vx"] < 0.0 and t["opt_vy"] < 0.0 and t["altitude"] > FW_ALTEZZA_MAX_SENSORE_OTTICO:
+        add_alert("optflow", "STATUS", "FLUSSO OTTICO NON UTILIZZATO",
+                   causa="Quota fuori dall'intervallo operativo del sensore (normale sopra i 4 m)",
+                   valore=f"Quota: {t['altitude']:.1f} m", soglia=f"{FW_ALTEZZA_MAX_SENSORE_OTTICO:.0f} m",
+                   azione="Nessuna azione: condizione attesa, non è un errore.")
+    else:
+        clear_alert("optflow")
+
+    # ── 11. ANOMALIA PITOT (DIAGNOSTICA DERIVATA — main.ino non ha un check esplicito) ──
+    diff = abs(t["spd_pitot"] - t["spd_gps"])
+    if t["in_flight"] and diff >= FW_PITOT_DIFF_ANOMALIA_KMH:
+        if _pitot_anomalia_dal is None:
+            _pitot_anomalia_dal = pygame.time.get_ticks()
+        durata_s = (pygame.time.get_ticks() - _pitot_anomalia_dal) / 1000.0
+        if durata_s >= FW_PITOT_DURATA_ANOMALIA_S:
+            add_alert("pitot_anomalia", "WARNING", "POSSIBILE ANOMALIA PITOT",
+                       causa="Divergenza persistente tra velocità Pitot e velocità GPS (diagnostica derivata, non un check firmware)",
+                       valore=f"Pitot: {t['spd_pitot']:.1f} km/h  |  GPS: {t['spd_gps']:.1f} km/h  |  Differenza: {diff:.1f} km/h",
+                       soglia=f"{FW_PITOT_DIFF_ANOMALIA_KMH:.0f} km/h per oltre {FW_PITOT_DURATA_ANOMALIA_S:.0f} s",
+                       azione="Possibili cause: Pitot ostruito, perdita di pressione, errore del sensore. Verificare a terra.",
+                       dettaglio_terminale=f"[DIAGNOSTIC][PITOT]\nPitot: {t['spd_pitot']:.1f} km/h\nGPS: {t['spd_gps']:.1f} km/h\n"
+                                            f"Differenza: {diff:.1f} km/h\nDurata anomalia: {durata_s:.1f} s")
+    else:
+        _pitot_anomalia_dal = None
+        clear_alert("pitot_anomalia", "VELOCITÀ PITOT/GPS COERENTI")
+
 
 def send_command(campo: str, valore) -> bool:
     global _ser_instance
@@ -268,11 +555,18 @@ def parse_telemetry(line):
       33 : Latitudine           [°]
       34 : Longitudine          [°]
       35 : Relè attivato        (0/1)
+      36 : Vel X flusso ottico  [m/s]
+      37 : Vel Y flusso ottico  [m/s]
+      38 : Stato sensori        bitmask (b0=flusso ottico OK, b1=LIDAR OK, b2=pacchetto SBUS perso)
+      39 : Errore rotta         [°]
+      40 : Limite gas termico   [µs]
+      41 : Altitudine LIDAR grezza [m]
+      42 : Altitudine Baro grezza   [m]
     """
     global T
     try:
         f = line.strip().split(',')
-        if len(f) < 36 or f[0] != '$':
+        if len(f) < 43 or f[0] != '$':
             print(f"[WARN] Pacchetto non valido (len={len(f)})")
             return
         # ── Modalità volo ────────────────────────────────────────────────
@@ -347,6 +641,30 @@ def parse_telemetry(line):
 
         # ── Relè ─────────────────────────────────────────────────────────
         T["relay"] = f[35].strip() == '1'
+
+        # ── Flusso ottico (velocità stimata) ──────────────────────────────
+        T["opt_vx"] = float(f[36])
+        T["opt_vy"] = float(f[37])
+
+        # ── Stato sensori (bitmask) ────────────────────────────────────────
+        stato_sensori = int(f[38])
+        T["sensor_optflow_ok"]  = bool(stato_sensori & 1)
+        T["sensor_lidar_ok"]    = bool(stato_sensori & 2)
+        T["sensor_packet_lost"] = bool(stato_sensori & 4)
+
+        # ── Navigazione avanzata ───────────────────────────────────────────
+        T["heading_error"] = float(f[39])
+
+        # ── Protezione termica motore ───────────────────────────────────────
+        T["thermal_limit"] = int(f[40])
+
+        # ── Altitudini grezze (diagnostica sensori) ─────────────────────────
+        T["alt_lidar_raw"] = float(f[41])
+        T["alt_baro_raw"]  = float(f[42])
+
+        HIST_BARO.append(T["alt_baro_raw"])
+        HIST_LIDAR.append(T["alt_lidar_raw"])
+        HIST_FUSA.append(T["altitude"])
 
     except Exception as e:
         print(f"[ERR] Pacchetto corrotto saltato: {e}")
@@ -636,6 +954,156 @@ def posizione(surf, t):
                    else C_RED))
 
 
+def draw_led_indicator(surf, x, y, label, ok):
+    """LED quadrato + etichetta, per stato booleano di un sensore/canale."""
+    col = C_GREEN if ok else C_RED
+    pygame.draw.rect(surf, col, (x, y, 18, 18), border_radius=3)
+    pygame.draw.rect(surf, C_BORDER, (x, y, 18, 18), 1, border_radius=3)
+    text(surf, label, (x + 26, y + 9), F_LABEL, C_TEXT, anchor="midleft")
+    text(surf, "OK" if ok else "FAIL", (x + 26 + 130, y + 9), F_VAL,
+         col, anchor="midleft")
+
+
+def draw_diag_panel(surf, t):
+    """Pannello diagnostica: stato sensori extra, errore rotta, limite termico, flusso ottico."""
+    draw_panel(surf, DIAG_PANEL, "DIAGNOSTICA SENSORI & NAV")
+    kx = DIAG_PANEL.x + 24
+    ky = DIAG_PANEL.y + 42
+
+    draw_led_indicator(surf, kx, ky,             "FLUSSO OTTICO", t["sensor_optflow_ok"])
+    draw_led_indicator(surf, kx+225, ky ,        "LIDAR",         t["sensor_lidar_ok"])
+    draw_led_indicator(surf, kx+450, ky ,        "PACCHETTO RC",  not t["sensor_packet_lost"])
+
+    kx2 = kx
+    err = abs(t["heading_error"])
+    col_err = (C_WHITE if err < HDG_ERR_WARN
+               else C_YELLOW if err < HDG_ERR_CRIT
+               else C_RED)
+    draw_kv(surf, "ERR ROTTA", f"{t['heading_error']:.1f}°", kx2, ky+30, col_v=col_err)
+
+    limitato = t["thermal_limit"] < GAS_MASSIMO
+    draw_kv(surf, "LIM TERMICO", f"{t['thermal_limit']} µs", kx2+225, ky + 30,
+            col_v=C_YELLOW if limitato else C_WHITE)
+
+    draw_kv(surf, "OPT VX", f"{t['opt_vx']:.2f} m/s", kx2+450, ky +30)
+    draw_kv(surf, "OPT VY", f"{t['opt_vy']:.2f} m/s", kx2+675, ky +30)
+
+
+def draw_alert_banner(surf, t):
+    """
+    Zona dedicata all'alert più importante attualmente attivo (priorità:
+    CRITICAL > WARNING > INFO > STATUS). Occupa lo spazio libero tra l'header
+    e la prima riga di pannelli, senza spostare né coprire nulla di esistente.
+    Cliccabile / attivabile con INVIO per aprire il dettaglio ("PERCHÉ?").
+    """
+    global _rect_banner
+    rect = pygame.Rect(24, 36, 1232, 62)
+    _rect_banner = rect
+
+    principale = alert_principale()
+    pygame.draw.rect(surf, C_PANEL, rect, border_radius=8)
+
+    if principale is None:
+        pygame.draw.rect(surf, C_GREEN, rect, 2, border_radius=8)
+        text(surf, "🟢  TUTTI I SISTEMI NOMINALI", rect.center, F_VAL, C_GREEN, anchor="center")
+    else:
+        col   = LIVELLI[principale["livello"]]["colore"]
+        icona = LIVELLI[principale["livello"]]["icona"]
+        pygame.draw.rect(surf, col, rect, 3, border_radius=8)
+        text(surf, f"{icona} {principale['titolo']}", (rect.x + 16, rect.y + 9), F_HEAD, col)
+        sotto = principale["causa"] or principale["descrizione"]
+        if sotto:
+            text(surf, sotto, (rect.x + 16, rect.y + 36), F_LABEL, C_TEXT)
+
+    hint = "[INVIO] dettagli   [D] diagnostica   [L] log   [M] perché MANUALE"
+    text(surf, hint, (rect.right - 14, rect.y + 8), F_SMALL, C_DIM, anchor="topright")
+
+    conteggi = {}
+    for a in alert_attivi.values():
+        conteggi[a["livello"]] = conteggi.get(a["livello"], 0) + 1
+    if conteggi:
+        riepilogo = "   ".join(f"{LIVELLI[l]['icona']} x{n}" for l, n in conteggi.items())
+        text(surf, riepilogo, (rect.right - 14, rect.bottom - 10), F_SMALL, C_TEXT, anchor="bottomright")
+
+
+def _draw_overlay_backdrop(surf, titolo):
+    dim = pygame.Surface((W, H), pygame.SRCALPHA)
+    dim.fill((5, 7, 12, 235))
+    surf.blit(dim, (0, 0))
+    rect = pygame.Rect(60, 60, W - 120, H - 120)
+    draw_panel(surf, rect, titolo)
+    return rect
+
+
+def draw_diagnostics_overlay(surf):
+    """Pannello scrollabile con TUTTI gli alert attivi e i dettagli completi."""
+    rect = _draw_overlay_backdrop(surf, "PANNELLO DIAGNOSTICA COMPLETO   —   [D] chiudi   [↑/↓] scorri")
+    clip_prec = surf.get_clip()
+    contenuto = pygame.Rect(rect.x + 10, rect.y + 36, rect.width - 20, rect.height - 46)
+    surf.set_clip(contenuto)
+
+    y = contenuto.y + 6 - _scroll_diag
+    items = alert_ordinati()
+    if not items:
+        text(surf, "🟢 Nessun allarme attivo — tutti i sistemi nominali.", (contenuto.x + 14, y), F_VAL, C_GREEN)
+    for codice, a in items:
+        col   = LIVELLI[a["livello"]]["colore"]
+        icona = LIVELLI[a["livello"]]["icona"]
+        text(surf, f"{icona} [{a['ts']}] {a['titolo']}", (contenuto.x + 14, y), F_VAL, col)
+        riga = []
+        if a["causa"]:  riga.append(f"Causa: {a['causa']}")
+        if a["soglia"]: riga.append(f"Soglia: {a['soglia']}")
+        if riga:
+            text(surf, "    " + "   |   ".join(riga), (contenuto.x + 14, y + 20), F_LABEL, C_TEXT)
+        if a["valore"]:
+            text(surf, f"    Valore attuale: {a['valore']}", (contenuto.x + 14, y + 38), F_LABEL, C_TEXT)
+        if a["azione"]:
+            text(surf, f"    ➜ Azione consigliata: {a['azione']}", (contenuto.x + 14, y + 56), F_SMALL, C_ACCENT)
+        pygame.draw.line(surf, C_BORDER, (contenuto.x, y + 74), (contenuto.right, y + 74), 1)
+        y += 84
+    surf.set_clip(clip_prec)
+
+
+def draw_log_overlay(surf):
+    """Log eventi scrollabile (i più recenti in cima). Registrato integralmente anche su terminale."""
+    rect = _draw_overlay_backdrop(surf, "LOG EVENTI   —   [L] chiudi   [↑/↓] scorri")
+    clip_prec = surf.get_clip()
+    contenuto = pygame.Rect(rect.x + 10, rect.y + 36, rect.width - 20, rect.height - 46)
+    surf.set_clip(contenuto)
+
+    y = contenuto.y + 6 - _scroll_log
+    voci = list(event_log)[::-1]
+    if not voci:
+        text(surf, "Nessun evento registrato.", (contenuto.x + 14, y), F_LABEL, C_DIM)
+    for ora, livello, msg in voci:
+        col = LIVELLI.get(livello, LIVELLI["INFO"])["colore"]
+        text(surf, f"{ora}   {msg}", (contenuto.x + 14, y), F_LABEL, col)
+        y += 24
+    surf.set_clip(clip_prec)
+
+
+def draw_perche_manuale_overlay(surf, t):
+    """Popup 'PERCHÉ?' dedicato al blocco della modalità MANUALE (comando MODO in main.ino)."""
+    rect = _draw_overlay_backdrop(surf, "PERCHÉ?  —  MODALITÀ MANUALE   —   [M] o [ESC] chiudi")
+    x = rect.x + 24
+    y = rect.y + 50
+    motivi = motivi_blocco_manuale(t)
+    if not motivi:
+        text(surf, "🟢 MANUALE DISPONIBILE", (x, y), F_HEAD, C_GREEN)
+        text(surf, "Nessuna condizione di blocco attiva: il comando MODO:1 verrà accettato.", (x, y + 34), F_LABEL, C_TEXT)
+    else:
+        text(surf, "🔴 MODALITÀ MANUALE BLOCCATA", (x, y), F_HEAD, C_RED)
+        y += 40
+        text(surf, "Motivi:", (x, y), F_TITLE, C_DIM); y += 26
+        for nome, spiegazione in motivi:
+            text(surf, f"✖ {nome}", (x + 20, y), F_VAL, C_RED); y += 22
+            text(surf, spiegazione, (x + 40, y), F_SMALL, C_TEXT); y += 30
+        y += 10
+        text(surf, "Condizioni necessarie per sbloccare:", (x, y), F_TITLE, C_DIM); y += 26
+        text(surf, "✓ Failsafe OFF (segnale radio ripristinato)", (x + 20, y), F_LABEL, C_TEXT); y += 22
+        text(surf, "✓ Schianto OFF (sblocco da radiocomando, canale 5 in basso)", (x + 20, y), F_LABEL, C_TEXT)
+
+
 def riproduci_audio(nome_file: str) -> bool:
     percorso = os.path.join(CARTELLA_AUDIO, nome_file)
     if not os.path.exists(percorso):
@@ -836,6 +1304,8 @@ def terminal_cli_thread():
             print(f"[CLI] Errore di input: {e}")
 
 def main():
+    global _overlay_diagnostica, _overlay_log, _overlay_perche, _scroll_diag, _scroll_log
+
     thread_seriale = threading.Thread(target=read_from_serial, daemon=True)
     thread_seriale.start()
 
@@ -849,9 +1319,40 @@ def main():
                 pygame.quit()
                 sys.exit()
 
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_d:
+                    _overlay_diagnostica = not _overlay_diagnostica
+                    _overlay_log = _overlay_perche = False
+                elif event.key == pygame.K_l:
+                    _overlay_log = not _overlay_log
+                    _overlay_diagnostica = _overlay_perche = False
+                elif event.key == pygame.K_m:
+                    _overlay_perche = not _overlay_perche
+                    _overlay_diagnostica = _overlay_log = False
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    if not (_overlay_diagnostica or _overlay_log or _overlay_perche):
+                        _overlay_diagnostica = True
+                elif event.key == pygame.K_ESCAPE:
+                    _overlay_diagnostica = _overlay_log = _overlay_perche = False
+                elif event.key == pygame.K_UP:
+                    _scroll_diag = max(0, _scroll_diag - 84)
+                    _scroll_log  = max(0, _scroll_log - 48)
+                elif event.key == pygame.K_DOWN:
+                    _scroll_diag += 84
+                    _scroll_log  += 48
+
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if _rect_banner.collidepoint(event.pos):
+                    _overlay_diagnostica = True
+                    _overlay_log = _overlay_perche = False
+
+        # ── Valutazione diagnostica (analizza la telemetria ricevuta da main.ino) ──
+        evaluate_diagnostics(T)
         aggiorna_warning(T)
+
         screen.fill(C_BG)
         draw_header(screen, T)
+        draw_alert_banner(screen, T)
         draw_power_panel(screen, T)
         draw_temp_panel(screen, T)
         draw_speed_panel(screen, T)
@@ -861,6 +1362,16 @@ def main():
         navigation_info_pannel(screen, T)
         posizione(screen, T)
         battery_pannel(screen, T)
+        draw_diag_panel(screen, T)
+
+
+        # ── Overlay (finestre di dettaglio): disegnati per ultimi, sopra a tutto ──
+        if _overlay_diagnostica:
+            draw_diagnostics_overlay(screen)
+        elif _overlay_log:
+            draw_log_overlay(screen)
+        elif _overlay_perche:
+            draw_perche_manuale_overlay(screen, T)
 
         pygame.display.flip()
         clock.tick(30)

@@ -90,6 +90,8 @@ const int   IMU_CAMPIONI_TARA = 200;
 const float T_MOTORE_THROTTLE_START = 70.0f;  
 const float T_MOTORE_THROTTLE_END  = 90.0f; 
 
+int G_limiteGasTermico = GAS_MASSIMO;
+
 const float ALPHA_LIDAR = 0.25f;
 const float ALTEZZA_MAX_LIDAR = 6.0f;
 const float ALTEZZA_MAX_SENSORE_OTTICO = 4.0f;
@@ -751,6 +753,7 @@ void loop()
         applicaMixer4Servi(correzionePitch, correzioneRoll);
 
         int limiteTermico = gasMaxTermico();
+        G_limiteGasTermico = limiteTermico; 
         if (comandoGasFinale > limiteTermico && sistema_sicurezza_temp) {
             comandoGasFinale = limiteTermico;
         }
@@ -1058,7 +1061,30 @@ void inviaTelemetria(float pitch, float roll, float yaw, float velPitotKmh, floa
             TELEMETRIA.print("0,0.000000,0.000000"); // Satelliti=0, Lat=0, Lon=0
         }
         TELEMETRIA.print(",");
-        TELEMETRIA.print(relèAttivato ? "1" : "0"); 
+        TELEMETRIA.print(relèAttivato ? "1" : "0");   // 35. Relè attivato
+        TELEMETRIA.print(",");
+
+        // --- FLUSSO OTTICO (velocità stimata, già calcolata ma finora non inviata) ---
+        TELEMETRIA.print(G_vel_x_optical_sensor, 2);  TELEMETRIA.print(","); // 36. Vel X flusso ottico [m/s]
+        TELEMETRIA.print(G_vel_y_optical_sensor, 2);  TELEMETRIA.print(","); // 37. Vel Y flusso ottico [m/s]
+
+        // --- STATO SENSORI (bitmask: b0=flusso ottico OK, b1=LIDAR OK, b2=pacchetto SBUS perso) ---
+        int statoSensori = 0;
+        if (flusso_otticoOK)  statoSensori += 1;
+        if (lidarOk)          statoSensori += 2;
+        if (pacchettoPerso)   statoSensori += 4;
+        TELEMETRIA.print(statoSensori);               TELEMETRIA.print(","); // 38. Bitmask stato sensori
+
+        // --- NAVIGAZIONE (errore rotta, già calcolato ma finora non inviato) ---
+        TELEMETRIA.print(G_errore_rotta, 1);          TELEMETRIA.print(","); // 39. Errore rotta [°]
+
+        // --- PROTEZIONE TERMICA MOTORE ---
+        TELEMETRIA.print(G_limiteGasTermico);         TELEMETRIA.print(","); // 40. Limite gas termico [µs]
+
+        // --- ALTITUDINI GREZZE (per diagnostica sensori, prima della fusione) ---
+        TELEMETRIA.print(G_altitudine_lidar, 2);      TELEMETRIA.print(","); // 41. Altitudine LIDAR grezza [m]
+        TELEMETRIA.print(G_altitudine_baro, 2);                              // 42. Altitudine Baro grezza [m]
+
         TELEMETRIA.println(); 
 
     }
