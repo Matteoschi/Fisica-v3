@@ -67,9 +67,9 @@ float PID_output_roll  = 0.0;
 float PID_output_pitch = 0.0;
 float PID_output_yaw   = 0.0;
 const int   IMU_CAMPIONI_TARA = 200;
-float offsetRoll  = 0.0f;
-float offsetPitch = 0.0f;
-float offsetyaw   = 0.0f;
+float offsetRoll_g  = 0.0f;
+float offsetPitch_g = 0.0f;
+float offsetyaw_g   = 0.0f;
 
 //  FILTRO DI KALMAN (ALTITUDINE E VELOCITÀ)
 float stima_altitudine = 0.0;
@@ -155,9 +155,9 @@ void setup() {
                 double yaw = ev.orientation.x;
                 delay(10);
             }
-            offsetRoll  = (float)(sommaRoll  / IMU_CAMPIONI_TARA);
-            offsetPitch = (float)(sommaPitch / IMU_CAMPIONI_TARA);
-            offsetyaw   = (float)(sommaYaw   / IMU_CAMPIONI_TARA);
+            offsetRoll_g  = (float)(sommaRoll  / IMU_CAMPIONI_TARA);
+            offsetPitch_g = (float)(sommaPitch / IMU_CAMPIONI_TARA);
+            offsetyaw_g   = (float)(sommaYaw   / IMU_CAMPIONI_TARA);
 
             imuPronto = true; 
        
@@ -242,9 +242,9 @@ void loop() {
     // ── 2. LETTURA IMU ──
     sensors_event_t event_ori;
     giroscopio.getEvent(&event_ori, Adafruit_BNO055::VECTOR_EULER);
-    float angoloPitch = event_ori.orientation.y - offsetPitch;
-    float angoloRoll  = event_ori.orientation.z - offsetRoll;
-    float angoloYaw   = event_ori.orientation.x - offsetyaw;
+    float angoloPitch = event_ori.orientation.y - offsetPitch_g;
+    float angoloRoll  = event_ori.orientation.z - offsetRoll_g;
+    float angoloYaw   = event_ori.orientation.x - offsetyaw_g;
 
     float pitch_rad = angoloPitch * (PI / 180.0);
     float roll_rad  = angoloRoll * (PI / 180.0);
@@ -605,9 +605,9 @@ void eseguiCalibrazionePad() {
     Serial.print("\n Calibazione assetto di partenza");
     sensors_event_t event;
     giroscopio.getEvent(&event);
-    posizione_partenza_roll  = event.orientation.z - offsetRoll;
-    posizione_partenza_pitch = event.orientation.y - offsetPitch;
-    posizione_partenza_yaw   = event.orientation.x - offsetyaw;
+    posizione_partenza_roll  = event.orientation.z - offsetRoll_g;
+    posizione_partenza_pitch = event.orientation.y - offsetPitch_g;
+    posizione_partenza_yaw   = event.orientation.x - offsetyaw_g;
 
     digitalWrite(PIN_LED_VERDE_DISARMATO, HIGH);
     digitalWrite(PIN_LED_ARMATO, HIGH);
