@@ -81,10 +81,10 @@ float G_correnteEstDX = 0.0f;
 
 const float R_SPECIFIC = 287.05f;
 
-const float VALORE_BATT_MOTORE_BASSA_V = 14.8f;  
+const float VALORE_BATT_MOTORE_BASSA_V = 13.5f;  
 const float VALORE_BATT_TEENSY_BASSA_V = 4.9f;   
 
-const int SOGLIA_G_SCHIANTO=50/9.81f;          
+const int SOGLIA_G_SCHIANTO=50;          //m/ss
 const int SEMPLE_VALORI_SCHIANTO=3;      
 
 const int CENTRO_SERVO  = 90;   
@@ -655,8 +655,13 @@ void loop()
     giroscopio.getEvent(&event);                         
     float angoloPitch_g = event.orientation.y - offsetPitch_g;   
     float angoloRoll_g  = event.orientation.z - offsetRoll_g;   
-    float angoloYaw_g   = event.orientation.x;                 // Yaw reale = lettura IMU SENZA sottrarre offsetyaw_g (offsetyaw_g calcolato ma non usato qui), in gradi (°)
-
+    float angoloYaw_g   = event.orientation.x ;                 // Yaw reale = lettura IMU SENZA sottrarre offsetyaw_g (offsetyaw_g calcolato ma non usato qui), in gradi (°)
+    //Normalizzazione angolo per mantenerlo  nel range [0, 360)
+    if (angoloYaw_g < 0.0f) {
+        angoloYaw_g += 360.0f;
+    } else if (angoloYaw_g >= 360.0f) {
+        angoloYaw_g -= 360.0f;
+    }
     // 2. temperatura motore e barometro
     temp_aria_barometro = barometro.temperature;    
     float voltaggio_Sensore_motore_V = analogRead(PIN_T_motore) * (3.3 / 1023.0);   // assumendo Vref 3.3V
