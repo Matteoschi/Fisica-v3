@@ -1,4 +1,3 @@
-
 import pygame
 import sys
 import serial  
@@ -215,6 +214,44 @@ T = {
     "thermal_limit":   GAS_MASSIMO,
     "alt_lidar_raw":   0.0,
     "alt_baro_raw":    0.0,
+    # ── NUOVI campi (v2 firmware) ─────────────────────────────────────
+    "spd_ground":      0.0,   # Groundspeed fusa [km/h] (usata dal controllore L1)
+    "fw_millis":       0,     # millis() firmware al momento dell'invio TEL1
+    "tel1_packet_num": 0,     # numero progressivo pacchetto TEL1
+    "tel1_lost_count": 0,     # pacchetti TEL1 mancanti stimati (da salti nel contatore)
+}
+
+# ── Diagnostica supplementare a bassa frequenza (pacchetti $2,/$3,/$4,) ──
+# Non presenti nella schermata principale: consultabili nella schermata
+# "TELEMETRIA ESTESA" (tasto E).
+T2 = {  # $2, — correnti/potenze batterie, flusso ottico grezzo, gas pre-limite
+    "curr_motor": 0.0, "curr_teensy": 0.0,
+    "curr_isx": 0.0, "curr_idx": 0.0, "curr_esx": 0.0, "curr_edx": 0.0,
+    "pow_motor": 0.0, "pow_teensy": 0.0,
+    "batt_low_motor": False, "batt_low_teensy": False,
+    "flow_dx": 0, "flow_dy": 0,
+    "gas_pre_limit": 0, "thermal_limit_active": False,
+}
+
+T3 = {  # $3, — diagnostica PID completa (alt/pitch/roll/vel: errore + P + I + D)
+    "alt_err": 0.0, "alt_p": 0.0, "alt_i": 0.0, "alt_d": 0.0,
+    "target_pitch_auto": 0.0,
+    "pitch_err": 0.0, "pitch_p": 0.0, "pitch_i": 0.0, "pitch_d": 0.0,
+    "roll_err": 0.0, "roll_p": 0.0, "roll_i": 0.0, "roll_d": 0.0,
+    "vel_err": 0.0, "vel_p": 0.0, "vel_i": 0.0, "vel_d": 0.0,
+    "alt_target": 0.0, "vel_target": 0.0,
+}
+
+T4 = {  # $4, — GPS esteso, barometro esteso, pitot grezzo, IMU estesa, RC 4-16
+    "gps_alt": -1.0, "gps_course": -1.0,
+    "gps_speed_valid": False, "gps_course_valid": False, "gps_loc_valid": False,
+    "baro_pressure": 0.0, "baro_tare": 0.0, "baro_ready": False,
+    "pitot_raw": 0, "pitot_zero": 0.0, "pitot_diff": 0.0, "pitot_valid": False,
+    "off_pitch": 0.0, "off_roll": 0.0, "off_yaw": 0.0,
+    "accel_x": 0.0, "accel_y": 0.0, "accel_z": 0.0, "accel_tot": 0.0,
+    "gyro_x": 0.0, "gyro_y": 0.0, "gyro_z": 0.0,
+    "imu_cal_sys": 0, "imu_cal_gyro": 0, "imu_cal_accel": 0, "imu_cal_mag": 0,
+    "rc_ext": [0] * 13,  # canali radio 4-16 (canali 1-3 già in T)
 }
 
 # Storici per i grafici (aggiornati ad ogni pacchetto telemetria valido)
@@ -327,13 +364,16 @@ _rect_banner        = pygame.Rect(0, 0, 0, 0)
 _overlay_diagnostica = False
 _overlay_log         = False
 _overlay_perche      = False
+_overlay_extended    = False   # NUOVO: schermata "TELEMETRIA ESTESA" (TEL2/TEL3/TEL4)
 _scroll_diag         = 0
 _scroll_log          = 0
+_scroll_ext          = 0       # NUOVO
 
 # ── Stato interno per diagnostiche derivate (non presenti direttamente
 #    nella telemetria, calcolate qui a partire dai dati ricevuti) ────────
 _pitot_anomalia_dal = None      # timestamp (ms) di inizio divergenza pitot/GPS persistente
 _relay_prec         = False
+_last_tel1_packet   = None      # NUOVO: ultimo numero progressivo pacchetto TEL1 ricevuto
 
 
 def evaluate_diagnostics(t):
@@ -419,7 +459,7 @@ def evaluate_diagnostics(t):
     else:
         clear_alert("servi_anomalia", "SERVI RIPRISTINATI")
 
-    # ── 8. GPS (satelliti/fix — campo 32 satellites, 0 se fix non valido) ──
+    # ── 8. GPS (satelliti/fix — campo 33 satellites, 0 se fix non valido) ──
     if t["satellites"] == 0:
         add_alert("gps_fix", "WARNING", "GPS NON DISPONIBILE",
                    causa="Nessun fix GPS valido",
@@ -477,6 +517,15 @@ def evaluate_diagnostics(t):
         _pitot_anomalia_dal = None
         clear_alert("pitot_anomalia", "VELOCITÀ PITOT/GPS COERENTI")
 
+    # ── 12. PACCHETTI TEL1 PERSI (diagnostica derivata dal contatore progressivo, campo 45) ──
+    if t["tel1_lost_count"] > 0:
+        add_alert("tel1_lost", "INFO", "PACCHETTI TELEMETRIA PERSI",
+                   causa="Salti rilevati nel numero progressivo del pacchetto TEL1 (radio LoRa)",
+                   valore=f"Pacchetti persi stimati: {t['tel1_lost_count']}",
+                   azione="Verificare qualità del collegamento LoRa/antenne se il numero cresce rapidamente.")
+    else:
+        clear_alert("tel1_lost")
+
 
 def send_command(campo: str, valore) -> bool:
     global _ser_instance
@@ -516,9 +565,39 @@ def read_from_serial():
 def clamp(v, lo, hi):
     return max(lo, min(v, hi))
 
+
 def parse_telemetry(line):
     """
-    Formato CSV (36 campi, indice 0 = '$') — sincronizzato con inviaTelemetria() v2:
+    Smista la riga ricevuta dal firmware in base al prefisso:
+      "$,"  -> TEL1 (stato/assetto/nav/batterie/servi — ~2 Hz, sempre presente)
+      "$2," -> TEL2 (correnti/potenze, flusso ottico grezzo, gas pre-limite)
+      "$3," -> TEL3 (diagnostica PID completa)
+      "$4," -> TEL4 (GPS/baro/pitot estesi, IMU estesa, RC 4-16)
+    TEL2/3/4 arrivano in round-robin ogni ~2s (vedi inviaTelemetria() in main.ino)
+    e alimentano la schermata "TELEMETRIA ESTESA" (tasto E), non la PFD principale.
+    """
+    line = line.strip()
+    if not line:
+        return
+    try:
+        if line.startswith("$2,"):
+            parse_tel2(line)
+        elif line.startswith("$3,"):
+            parse_tel3(line)
+        elif line.startswith("$4,"):
+            parse_tel4(line)
+        elif line.startswith("$,"):
+            parse_tel1(line)
+        else:
+            print(f"[WARN] Pacchetto sconosciuto: {line[:24]}")
+    except Exception as e:
+        print(f"[ERR] Pacchetto corrotto saltato: {e}")
+
+
+def parse_tel1(line):
+    """
+    Pacchetto principale ($,) — 46 campi (indice 0 = '$'), sincronizzato con
+    inviaTelemetria() v2 in main.ino:
       0  : $
       1  : modalità volo        (1=Manuale, 2=Auto, 3=Failsafe)
       2  : codiceAllarme        bitmask (b0=failsafe, b1=battMot, b2=relè, b3=battTsy, b4=schianto, b5=inVolo)
@@ -535,139 +614,239 @@ def parse_telemetry(line):
       13 : Altitudine relativa  [m]
       14 : Velocità Pitot       [km/h]
       15 : Velocità GPS         [km/h]
-      16 : Velocità stimata     [km/h]
-      17 : Distanza target      [m]
-      18 : Rotta verso target   [°]
-      19 : Target roll (L1)     [°]
-      20 : RC Pitch             [µs 172-1811]
-      21 : RC Roll              [µs]
-      22 : RC Gas               [µs]
-      23 : PID out Pitch        [µs]
-      24 : PID out Roll         [µs]
-      25 : PID out Gas          [µs ~1000-2000]
-      26 : Pos Servo Int SX     [°]
-      27 : Pos Servo Int DX     [°]
-      28 : Pos Servo Est SX     [°]
-      29 : Pos Servo Est DX     [°]
-      30 : Temperatura motore   [°C]
-      31 : Temperatura avionica [°C]
-      32 : Satelliti GPS
-      33 : Latitudine           [°]
-      34 : Longitudine          [°]
-      35 : Relè attivato        (0/1)
-      36 : Vel X flusso ottico  [m/s]
-      37 : Vel Y flusso ottico  [m/s]
-      38 : Stato sensori        bitmask (b0=flusso ottico OK, b1=LIDAR OK, b2=pacchetto SBUS perso)
-      39 : Errore rotta         [°]
-      40 : Limite gas termico   [µs]
-      41 : Altitudine LIDAR grezza [m]
-      42 : Altitudine Baro grezza   [m]
+      16 : Airspeed fusa        [km/h]  (usata dal PID/autothrottle)
+      17 : Groundspeed fusa     [km/h]  (NUOVO — usata dal controllore L1)
+      18 : Distanza target      [m]
+      19 : Rotta verso target   [°]
+      20 : Target roll (L1)     [°]
+      21 : RC Pitch             [µs 172-1811]
+      22 : RC Roll              [µs]
+      23 : RC Gas               [µs]
+      24 : PID out Pitch        [µs]
+      25 : PID out Roll         [µs]
+      26 : PID out Gas          [µs ~1000-2000]
+      27 : Pos Servo Int SX     [°]
+      28 : Pos Servo Int DX     [°]
+      29 : Pos Servo Est SX     [°]
+      30 : Pos Servo Est DX     [°]
+      31 : Temperatura motore   [°C]
+      32 : Temperatura avionica [°C]
+      33 : Satelliti GPS
+      34 : Latitudine           [°]
+      35 : Longitudine          [°]
+      36 : Relè attivato        (0/1)
+      37 : Vel X flusso ottico  [m/s]
+      38 : Vel Y flusso ottico  [m/s]
+      39 : Stato sensori        bitmask (b0=flusso ottico OK, b1=LIDAR OK, b2=pacchetto SBUS perso)
+      40 : Errore rotta         [°]
+      41 : Limite gas termico   [µs]
+      42 : Altitudine LIDAR grezza [m]
+      43 : Altitudine Baro grezza   [m]
+      44 : timestamp firmware (millis())   (NUOVO)
+      45 : numero progressivo pacchetto    (NUOVO)
+
+    NOTA: tutti gli indici dal 17 in poi erano disallineati di una posizione
+    nella versione precedente del parser (mancava il campo Groundspeed) —
+    corretto qui.
     """
-    global T
-    try:
-        f = line.strip().split(',')
-        if len(f) < 43 or f[0] != '$':
-            print(f"[WARN] Pacchetto non valido (len={len(f)})")
-            return
-        # ── Modalità volo ────────────────────────────────────────────────
-        T["mode"] = {1: "MANUALE", 2: "AUTO PID", 3: "FAILSAFE!"}.get(int(f[1]), "SCONOSCIUTA")
-        
-        # ── Bitmask allarmi ──────────────────────────────────────────────
-        alarm = int(f[2])
-        T["alarm_failsafe"] = bool(alarm & 1)
-        T["alarm_batt_motor"] = bool(alarm & 2)
-        T["alarm_relay"]    = bool(alarm & 4)
-        T["alarm_batt_teensy"]= bool(alarm & 8)
-        T["alarm_crash"]   = bool(alarm & 16)
-        T["in_flight"]     = bool(alarm & 32)
+    global T, _last_tel1_packet
+    f = line.split(',')
+    if len(f) < 46 or f[0] != '$':
+        print(f"[WARN] Pacchetto TEL1 non valido (len={len(f)})")
+        return
 
-        # ── Alimentazione ────────────────────────────────────────────────
-        T["v_motor"]  = float(f[3])
-        T["v_teensy"] = float(f[4])
-        T["v_isx"] = float(f[5])
-        T["v_idx"] = float(f[6])
-        T["v_esx"]  = float(f[7])
-        T["v_edx"]  = float(f[8])
+    T["mode"] = {1: "MANUALE", 2: "AUTO PID", 3: "FAILSAFE!"}.get(int(f[1]), "SCONOSCIUTA")
 
-        # ── Salute servi (stringa "1111") ────────────────────────────────
-        health    = f[9].strip()
-        T["ok_isx"] = len(health) > 0 and health[0] == '1'
-        T["ok_idx"] = len(health) > 1 and health[1] == '1'
-        T["ok_esx"] = len(health) > 2 and health[2] =='1'
-        T["ok_edx"] = len(health) > 3 and health[3] == '1'
+    alarm = int(f[2])
+    T["alarm_failsafe"]    = bool(alarm & 1)
+    T["alarm_batt_motor"]  = bool(alarm & 2)
+    T["alarm_relay"]       = bool(alarm & 4)
+    T["alarm_batt_teensy"] = bool(alarm & 8)
+    T["alarm_crash"]       = bool(alarm & 16)
+    T["in_flight"]         = bool(alarm & 32)
 
-        # ── Assetto ──────────────────────────────────────────────────────
-        T["pitch"]  = float(f[10])
-        T["roll"]  = float(f[11])
-        T["yaw"] = float(f[12])
-        T["altitude"] = float(f[13])
+    T["v_motor"]  = float(f[3])
+    T["v_teensy"] = float(f[4])
+    T["v_isx"] = float(f[5])
+    T["v_idx"] = float(f[6])
+    T["v_esx"] = float(f[7])
+    T["v_edx"] = float(f[8])
 
-        # ── Velocità ─────────────────────────────────────────────────────
-        T["spd_pitot"]= float(f[14])
-        T["spd_gps"] = float(f[15])
-        T["spd_fused"]= float(f[16])
-        T["spd_ms"]  = T["spd_fused"] / 3.6   # km/h → m/s per l'HUD
+    health = f[9].strip()
+    T["ok_isx"] = len(health) > 0 and health[0] == '1'
+    T["ok_idx"] = len(health) > 1 and health[1] == '1'
+    T["ok_esx"] = len(health) > 2 and health[2] == '1'
+    T["ok_edx"] = len(health) > 3 and health[3] == '1'
 
-        # ── Navigazione ──────────────────────────────────────────────────
-        T["dist_target"] = float(f[17])
-        T["hdg_target"]  = float(f[18])
-        T["roll_target"] = float(f[19])
+    T["pitch"]    = float(f[10])
+    T["roll"]     = float(f[11])
+    T["yaw"]      = float(f[12])
+    T["altitude"] = float(f[13])
 
-        # ── Input RC grezzo [µs] ─────────────────────────────────────────
-        T["rc_pitch"] = float(f[20])
-        T["rc_roll"] = float(f[21])
-        T["rc_gas"] = float(f[22])
+    T["spd_pitot"]  = float(f[14])
+    T["spd_gps"]    = float(f[15])
+    T["spd_fused"]  = float(f[16])   # Airspeed fusa (usata dal PID/autothrottle)
+    T["spd_ground"] = float(f[17])   # NUOVO: Groundspeed fusa (usata dal controllore L1)
+    T["spd_ms"]     = T["spd_fused"] / 3.6   # km/h → m/s per l'HUD (airspeed)
 
-        # ── Output PID/mixer ─────────────────────────────────────────────
-        T["pid_pitch"]= float(f[23])
-        T["pid_roll"] = float(f[24])
-        T["pid_gas"] = clamp((float(f[25]) - GAS_MINIMO) / (GAS_MASSIMO - GAS_MINIMO), 0.0, 1.0)
-        T["throttle"]  = T["pid_gas"]
+    T["dist_target"] = float(f[18])
+    T["hdg_target"]  = float(f[19])
+    T["roll_target"] = float(f[20])
 
-        # ── Posizione fisica servi [°] ───────────────────────────────────
-        T["deg_isx"] = float(f[26])
-        T["deg_idx"]= float(f[27])
-        T["deg_esx"]= float(f[28])
-        T["deg_edx"] = float(f[29])
+    T["rc_pitch"] = float(f[21])
+    T["rc_roll"]  = float(f[22])
+    T["rc_gas"]   = float(f[23])
 
-        # ── Temperature ──────────────────────────────────────────────────
-        T["t_motor"]  = float(f[30])
-        T["t_teensy"] = float(f[31])
+    T["pid_pitch"] = float(f[24])
+    T["pid_roll"]  = float(f[25])
+    T["pid_gas"]   = clamp((float(f[26]) - GAS_MINIMO) / (GAS_MASSIMO - GAS_MINIMO), 0.0, 1.0)
+    T["throttle"]  = T["pid_gas"]
 
-        # ── GPS ──────────────────────────────────────────────────────────
-        T["satellites"] = int(f[32])
-        T["lat"]  = float(f[33])
-        T["lon"]  = float(f[34])
+    T["deg_isx"] = float(f[27])
+    T["deg_idx"] = float(f[28])
+    T["deg_esx"] = float(f[29])
+    T["deg_edx"] = float(f[30])
 
-        # ── Relè ─────────────────────────────────────────────────────────
-        T["relay"] = f[35].strip() == '1'
+    T["t_motor"]  = float(f[31])
+    T["t_teensy"] = float(f[32])
 
-        # ── Flusso ottico (velocità stimata) ──────────────────────────────
-        T["opt_vx"] = float(f[36])
-        T["opt_vy"] = float(f[37])
+    T["satellites"] = int(f[33])
+    T["lat"] = float(f[34])
+    T["lon"] = float(f[35])
 
-        # ── Stato sensori (bitmask) ────────────────────────────────────────
-        stato_sensori = int(f[38])
-        T["sensor_optflow_ok"]  = bool(stato_sensori & 1)
-        T["sensor_lidar_ok"]    = bool(stato_sensori & 2)
-        T["sensor_packet_lost"] = bool(stato_sensori & 4)
+    T["relay"] = f[36].strip() == '1'
 
-        # ── Navigazione avanzata ───────────────────────────────────────────
-        T["heading_error"] = float(f[39])
+    T["opt_vx"] = float(f[37])
+    T["opt_vy"] = float(f[38])
 
-        # ── Protezione termica motore ───────────────────────────────────────
-        T["thermal_limit"] = int(f[40])
+    stato_sensori = int(f[39])
+    T["sensor_optflow_ok"]  = bool(stato_sensori & 1)
+    T["sensor_lidar_ok"]    = bool(stato_sensori & 2)
+    T["sensor_packet_lost"] = bool(stato_sensori & 4)
 
-        # ── Altitudini grezze (diagnostica sensori) ─────────────────────────
-        T["alt_lidar_raw"] = float(f[41])
-        T["alt_baro_raw"]  = float(f[42])
+    T["heading_error"] = float(f[40])
+    T["thermal_limit"] = int(f[41])
+    T["alt_lidar_raw"] = float(f[42])
+    T["alt_baro_raw"]  = float(f[43])
 
-        HIST_BARO.append(T["alt_baro_raw"])
-        HIST_LIDAR.append(T["alt_lidar_raw"])
-        HIST_FUSA.append(T["altitude"])
+    # ── NUOVO: timestamp firmware + contatore pacchetto (rilevamento perdite) ──
+    T["fw_millis"] = int(f[44])
+    pacchetto_num  = int(f[45])
+    if _last_tel1_packet is not None and pacchetto_num > _last_tel1_packet:
+        atteso = _last_tel1_packet + 1
+        if pacchetto_num != atteso:
+            T["tel1_lost_count"] += (pacchetto_num - atteso)
+    _last_tel1_packet = pacchetto_num
+    T["tel1_packet_num"] = pacchetto_num
 
-    except Exception as e:
-        print(f"[ERR] Pacchetto corrotto saltato: {e}")
+    HIST_BARO.append(T["alt_baro_raw"])
+    HIST_LIDAR.append(T["alt_lidar_raw"])
+    HIST_FUSA.append(T["altitude"])
+
+
+def parse_tel2(line):
+    """
+    TEL2 ($2,) — correnti/potenze batterie, flusso ottico grezzo, gas pre-limite:
+      1 corrente motore [mA], 2 corrente Teensy [mA],
+      3-6 correnti servi Int SX/Int DX/Est SX/Est DX [mA],
+      7 potenza motore [mW], 8 potenza Teensy [mW],
+      9 batteria motore bassa (0/1), 10 batteria Teensy bassa (0/1),
+      11-12 flusso ottico dx/dy grezzo, 13 gas pre-limite termico [µs],
+      14 limitazione termica attiva (0/1)
+    """
+    f = line.split(',')
+    if len(f) < 15 or f[0] != '$2':
+        print(f"[WARN] Pacchetto TEL2 non valido (len={len(f)})")
+        return
+    T2["curr_motor"]  = float(f[1])
+    T2["curr_teensy"] = float(f[2])
+    T2["curr_isx"]    = float(f[3])
+    T2["curr_idx"]    = float(f[4])
+    T2["curr_esx"]    = float(f[5])
+    T2["curr_edx"]    = float(f[6])
+    T2["pow_motor"]   = float(f[7])
+    T2["pow_teensy"]  = float(f[8])
+    T2["batt_low_motor"]  = f[9].strip() == '1'
+    T2["batt_low_teensy"] = f[10].strip() == '1'
+    T2["flow_dx"] = int(float(f[11]))
+    T2["flow_dy"] = int(float(f[12]))
+    T2["gas_pre_limit"] = int(float(f[13]))
+    T2["thermal_limit_active"] = f[14].strip() == '1'
+
+
+def parse_tel3(line):
+    """
+    TEL3 ($3,) — diagnostica PID completa:
+      1-4   alt: errore/P/I/D
+      5     target pitch (uscita del PID quota)
+      6-9   pitch: errore/P/I/D
+      10-13 roll: errore/P/I/D
+      14-17 vel (autothrottle): errore/P/I/D
+      18    target altitudine [m]
+      19    target velocità attuale [km/h]
+    """
+    f = line.split(',')
+    if len(f) < 20 or f[0] != '$3':
+        print(f"[WARN] Pacchetto TEL3 non valido (len={len(f)})")
+        return
+    T3["alt_err"] = float(f[1]); T3["alt_p"] = float(f[2]); T3["alt_i"] = float(f[3]); T3["alt_d"] = float(f[4])
+    T3["target_pitch_auto"] = float(f[5])
+    T3["pitch_err"] = float(f[6]); T3["pitch_p"] = float(f[7]); T3["pitch_i"] = float(f[8]); T3["pitch_d"] = float(f[9])
+    T3["roll_err"] = float(f[10]); T3["roll_p"] = float(f[11]); T3["roll_i"] = float(f[12]); T3["roll_d"] = float(f[13])
+    T3["vel_err"] = float(f[14]); T3["vel_p"] = float(f[15]); T3["vel_i"] = float(f[16]); T3["vel_d"] = float(f[17])
+    T3["alt_target"] = float(f[18])
+    T3["vel_target"] = float(f[19])
+
+
+def parse_tel4(line):
+    """
+    TEL4 ($4,) — GPS esteso, barometro esteso, pitot grezzo, IMU estesa, RC 4-16:
+      1  altitudine GPS [m] (-1 se non valida)
+      2  rotta GPS (course) [°] (-1 se non valida)
+      3  velocità GPS valida (0/1)
+      4  rotta GPS valida (0/1)
+      5  fix posizione GPS valido (0/1)
+      6  pressione barometrica [Pa]
+      7  tara altitudine ASL [m]
+      8  barometro pronto (0/1)
+      9  pitot grezzo (ADC)
+      10 pitot zero (taratura)
+      11 pitot differenza
+      12 pitot valido (0/1)
+      13-15 offset pitch/roll/yaw (tara IMU)
+      16-18 accelerazione lineare X/Y/Z [m/s²]
+      19 accelerazione totale [m/s²]
+      20-22 giroscopio X/Y/Z [°/s]
+      23-26 calibrazione IMU sys/gyro/accel/mag (0-3)
+      27-39 canali RC 4-16 [µs] (13 valori)
+    """
+    f = line.split(',')
+    if len(f) < 40 or f[0] != '$4':
+        print(f"[WARN] Pacchetto TEL4 non valido (len={len(f)})")
+        return
+    T4["gps_alt"] = float(f[1])
+    T4["gps_course"] = float(f[2])
+    T4["gps_speed_valid"]  = f[3].strip() == '1'
+    T4["gps_course_valid"] = f[4].strip() == '1'
+    T4["gps_loc_valid"]    = f[5].strip() == '1'
+    T4["baro_pressure"] = float(f[6])
+    T4["baro_tare"]     = float(f[7])
+    T4["baro_ready"]    = f[8].strip() == '1'
+    T4["pitot_raw"]  = int(float(f[9]))
+    T4["pitot_zero"] = float(f[10])
+    T4["pitot_diff"] = float(f[11])
+    T4["pitot_valid"] = f[12].strip() == '1'
+    T4["off_pitch"] = float(f[13]); T4["off_roll"] = float(f[14]); T4["off_yaw"] = float(f[15])
+    T4["accel_x"] = float(f[16]); T4["accel_y"] = float(f[17]); T4["accel_z"] = float(f[18])
+    T4["accel_tot"] = float(f[19])
+    T4["gyro_x"] = float(f[20]); T4["gyro_y"] = float(f[21]); T4["gyro_z"] = float(f[22])
+    T4["imu_cal_sys"]   = int(float(f[23]))
+    T4["imu_cal_gyro"]  = int(float(f[24]))
+    T4["imu_cal_accel"] = int(float(f[25]))
+    T4["imu_cal_mag"]   = int(float(f[26]))
+    rc = f[27:40]
+    T4["rc_ext"] = [int(float(v)) for v in rc if v.strip() != ""]
+
 
 def text(surf, s, pos, font, color, anchor="topleft"):
 
@@ -836,10 +1015,14 @@ def draw_temp_panel(surf, t):
 
 
 def draw_speed_panel(surf, t):
+    """Pannello SPEED — ora con 4 velocità: Pitot/GPS grezze + Airspeed/Groundspeed fuse."""
     draw_panel(surf, SPEED_PANEL, "SPEED")
-    entries = [("PITOT", t["spd_pitot"], "km/h"),("GPS",   t["spd_gps"],   "km/h"),("EST",   t["spd_ms"],    "m/s")]
-    bw, bh, gap = 88, 120, 10
-    bx = SPEED_PANEL.x + 18
+    entries = [("PITOT", t["spd_pitot"],  "km/h"),
+               ("GPS",   t["spd_gps"],    "km/h"),
+               ("AIR",   t["spd_fused"],  "km/h"),   # airspeed fusa, usata dal PID
+               ("GND",   t["spd_ground"], "km/h")]   # NUOVO: groundspeed fusa, usata dal L1
+    bw, bh, gap = 78, 120, 8
+    bx = SPEED_PANEL.x + 14
     by = SPEED_PANEL.y + 50
     for label, val, unit in entries:
         r = pygame.Rect(bx, by, bw, bh)
@@ -948,7 +1131,7 @@ def posizione(surf, t):
                    else C_YELLOW if abs(t["pitch"]) < PITCH_CRIT
                    else C_RED))
     draw_kv(surf, "YAW",       f"{t['yaw']:.1f}°",       kx + 215, ky)
-    draw_kv(surf, "SPEED km/h",f"{t['spd_fused']:.1f} km/h", kx + 215, ky + 34,
+    draw_kv(surf, "AIRSPD",    f"{t['spd_fused']:.1f} km/h", kx + 215, ky + 34,
             col_v=(C_WHITE  if t["spd_fused"] < SPD_WARN
                    else C_YELLOW if t["spd_fused"] < SPD_CRIT
                    else C_RED))
@@ -1015,7 +1198,7 @@ def draw_alert_banner(surf, t):
         if sotto:
             text(surf, sotto, (rect.x + 16, rect.y + 36), F_LABEL, C_TEXT)
 
-    hint = "[INVIO] dettagli   [D] diagnostica   [L] log   [M] perché MANUALE"
+    hint = "[INVIO] dettagli   [D] diagnostica   [L] log   [M] perché MANUALE   [E] telemetria estesa"
     text(surf, hint, (rect.right - 14, rect.y + 8), F_SMALL, C_DIM, anchor="topright")
 
     conteggi = {}
@@ -1102,6 +1285,112 @@ def draw_perche_manuale_overlay(surf, t):
         text(surf, "Condizioni necessarie per sbloccare:", (x, y), F_TITLE, C_DIM); y += 26
         text(surf, "✓ Failsafe OFF (segnale radio ripristinato)", (x + 20, y), F_LABEL, C_TEXT); y += 22
         text(surf, "✓ Schianto OFF (sblocco da radiocomando, canale 5 in basso)", (x + 20, y), F_LABEL, C_TEXT)
+
+
+def draw_extended_overlay(surf):
+    """
+    NUOVO — Schermata "TELEMETRIA ESTESA": mostra tutti i dati diagnostici dei
+    pacchetti TEL2/TEL3/TEL4 che non compaiono nella PFD principale
+    (correnti/potenze, diagnostica PID completa, GPS/baro/pitot/IMU estesi,
+    RC 4-16, contatori pacchetto). Aggiornati in round-robin ogni ~2s.
+    """
+    rect = _draw_overlay_backdrop(surf, "TELEMETRIA ESTESA — TEL2 / TEL3 / TEL4   —   [E] chiudi   [↑/↓] scorri")
+    clip_prec = surf.get_clip()
+    contenuto = pygame.Rect(rect.x + 10, rect.y + 36, rect.width - 20, rect.height - 46)
+    surf.set_clip(contenuto)
+
+    col_w = contenuto.width // 2
+    x1 = contenuto.x + 14
+    x2 = contenuto.x + col_w + 14
+    val_off = 232
+
+    def riga_kv(x, y, lbl, val, col=C_WHITE):
+        text(surf, lbl, (x, y), F_LABEL, C_DIM)
+        text(surf, val, (x + val_off, y), F_VAL, col)
+        return y + 22
+
+    # ── Colonna sinistra: TEL2 (potenza/correnti) + TEL4 (IMU/pitot/baro) ──
+    y = contenuto.y + 6 - _scroll_ext
+    text(surf, "── CORRENTI / POTENZE (TEL2) ──", (x1, y), F_TITLE, C_ACCENT); y += 26
+    for lbl, val in [
+        ("Corrente motore",   f"{T2['curr_motor']:.1f} mA"),
+        ("Corrente Teensy",   f"{T2['curr_teensy']:.1f} mA"),
+        ("Corrente Int SX",   f"{T2['curr_isx']:.1f} mA"),
+        ("Corrente Int DX",   f"{T2['curr_idx']:.1f} mA"),
+        ("Corrente Est SX",   f"{T2['curr_esx']:.1f} mA"),
+        ("Corrente Est DX",   f"{T2['curr_edx']:.1f} mA"),
+        ("Potenza motore",    f"{T2['pow_motor']:.1f} mW"),
+        ("Potenza Teensy",    f"{T2['pow_teensy']:.1f} mW"),
+        ("Gas pre-limite termico", f"{T2['gas_pre_limit']} µs"),
+        ("Limitazione termica attiva", "ATTIVA" if T2['thermal_limit_active'] else "no"),
+        ("Flusso ottico dx (grezzo)",  f"{T2['flow_dx']}"),
+        ("Flusso ottico dy (grezzo)",  f"{T2['flow_dy']}"),
+    ]:
+        y = riga_kv(x1, y, lbl, val)
+
+    y += 12
+    text(surf, "── IMU ESTESA / PITOT / BARO (TEL4) ──", (x1, y), F_TITLE, C_ACCENT); y += 26
+    for lbl, val in [
+        ("Accel X/Y/Z", f"{T4['accel_x']:.2f}/{T4['accel_y']:.2f}/{T4['accel_z']:.2f} m/s²"),
+        ("Accel totale", f"{T4['accel_tot']:.2f} m/s²"),
+        ("Giroscopio X/Y/Z", f"{T4['gyro_x']:.2f}/{T4['gyro_y']:.2f}/{T4['gyro_z']:.2f} °/s"),
+        ("Cal. IMU (sys/gyro/acc/mag)", f"{T4['imu_cal_sys']}/{T4['imu_cal_gyro']}/{T4['imu_cal_accel']}/{T4['imu_cal_mag']}"),
+        ("Offset pitch/roll/yaw", f"{T4['off_pitch']:.2f}/{T4['off_roll']:.2f}/{T4['off_yaw']:.2f}"),
+        ("Pitot grezzo (ADC)", f"{T4['pitot_raw']}"),
+        ("Pitot zero (taratura)", f"{T4['pitot_zero']:.1f}"),
+        ("Pitot differenza", f"{T4['pitot_diff']:.1f}"),
+        ("Pitot valido", "sì" if T4['pitot_valid'] else "no"),
+        ("Pressione barometrica", f"{T4['baro_pressure']:.1f} Pa"),
+        ("Tara altitudine ASL", f"{T4['baro_tare']:.1f} m"),
+        ("Barometro pronto", "sì" if T4['baro_ready'] else "no"),
+    ]:
+        y = riga_kv(x1, y, lbl, val)
+
+    # ── Colonna destra: TEL3 (PID) + GPS esteso + pacchetti/RC ──
+    y = contenuto.y + 6 - _scroll_ext
+    text(surf, "── DIAGNOSTICA PID COMPLETA (TEL3) ──", (x2, y), F_TITLE, C_ACCENT); y += 26
+    for lbl, val in [
+        ("Target altitudine", f"{T3['alt_target']:.1f} m"),
+        ("Target velocità attuale", f"{T3['vel_target']:.1f} km/h"),
+        ("Alt: err/P/I/D", f"{T3['alt_err']:.2f}/{T3['alt_p']:.2f}/{T3['alt_i']:.2f}/{T3['alt_d']:.2f}"),
+        ("Target pitch auto", f"{T3['target_pitch_auto']:.2f}°"),
+        ("Pitch: err/P/I/D", f"{T3['pitch_err']:.2f}/{T3['pitch_p']:.2f}/{T3['pitch_i']:.2f}/{T3['pitch_d']:.2f}"),
+        ("Roll: err/P/I/D", f"{T3['roll_err']:.2f}/{T3['roll_p']:.2f}/{T3['roll_i']:.2f}/{T3['roll_d']:.2f}"),
+        ("Vel: err/P/I/D", f"{T3['vel_err']:.2f}/{T3['vel_p']:.2f}/{T3['vel_i']:.2f}/{T3['vel_d']:.2f}"),
+    ]:
+        y = riga_kv(x2, y, lbl, val)
+
+    y += 12
+    text(surf, "── GPS ESTESO (TEL4) ──", (x2, y), F_TITLE, C_ACCENT); y += 26
+    for lbl, val in [
+        ("Altitudine GPS", f"{T4['gps_alt']:.1f} m" if T4['gps_alt'] >= 0 else "n/d"),
+        ("Rotta GPS (course)", f"{T4['gps_course']:.1f}°" if T4['gps_course'] >= 0 else "n/d"),
+        ("Fix posizione valido", "sì" if T4['gps_loc_valid'] else "no"),
+        ("Velocità GPS valida", "sì" if T4['gps_speed_valid'] else "no"),
+        ("Rotta GPS valida", "sì" if T4['gps_course_valid'] else "no"),
+    ]:
+        y = riga_kv(x2, y, lbl, val)
+
+    y += 12
+    text(surf, "── PACCHETTI TEL1 / RC ESTESO ──", (x2, y), F_TITLE, C_ACCENT); y += 26
+    y = riga_kv(x2, y, "Timestamp firmware", f"{T['fw_millis']} ms")
+    y = riga_kv(x2, y, "N. pacchetto TEL1", f"{T['tel1_packet_num']}")
+    y = riga_kv(x2, y, "Pacchetti TEL1 persi (stimati)", f"{T['tel1_lost_count']}",
+                col=C_RED if T['tel1_lost_count'] > 0 else C_GREEN)
+
+    if T4["rc_ext"]:
+        text(surf, "RC canali 4-16 (µs):", (x2, y), F_LABEL, C_DIM); y += 20
+        riga_txt = ""
+        for i, v in enumerate(T4["rc_ext"]):
+            pezzo = f"CH{i+4}:{v}  "
+            if len(riga_txt) + len(pezzo) > 44:
+                text(surf, riga_txt, (x2 + 10, y), F_SMALL, C_WHITE); y += 18
+                riga_txt = ""
+            riga_txt += pezzo
+        if riga_txt:
+            text(surf, riga_txt, (x2 + 10, y), F_SMALL, C_WHITE); y += 18
+
+    surf.set_clip(clip_prec)
 
 
 def riproduci_audio(nome_file: str) -> bool:
@@ -1304,7 +1593,7 @@ def terminal_cli_thread():
             print(f"[CLI] Errore di input: {e}")
 
 def main():
-    global _overlay_diagnostica, _overlay_log, _overlay_perche, _scroll_diag, _scroll_log
+    global _overlay_diagnostica, _overlay_log, _overlay_perche, _overlay_extended, _scroll_diag, _scroll_log, _scroll_ext
 
     thread_seriale = threading.Thread(target=read_from_serial, daemon=True)
     thread_seriale.start()
@@ -1322,29 +1611,34 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_d:
                     _overlay_diagnostica = not _overlay_diagnostica
-                    _overlay_log = _overlay_perche = False
+                    _overlay_log = _overlay_perche = _overlay_extended = False
                 elif event.key == pygame.K_l:
                     _overlay_log = not _overlay_log
-                    _overlay_diagnostica = _overlay_perche = False
+                    _overlay_diagnostica = _overlay_perche = _overlay_extended = False
                 elif event.key == pygame.K_m:
                     _overlay_perche = not _overlay_perche
-                    _overlay_diagnostica = _overlay_log = False
+                    _overlay_diagnostica = _overlay_log = _overlay_extended = False
+                elif event.key == pygame.K_e:
+                    _overlay_extended = not _overlay_extended
+                    _overlay_diagnostica = _overlay_log = _overlay_perche = False
                 elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-                    if not (_overlay_diagnostica or _overlay_log or _overlay_perche):
+                    if not (_overlay_diagnostica or _overlay_log or _overlay_perche or _overlay_extended):
                         _overlay_diagnostica = True
                 elif event.key == pygame.K_ESCAPE:
-                    _overlay_diagnostica = _overlay_log = _overlay_perche = False
+                    _overlay_diagnostica = _overlay_log = _overlay_perche = _overlay_extended = False
                 elif event.key == pygame.K_UP:
                     _scroll_diag = max(0, _scroll_diag - 84)
                     _scroll_log  = max(0, _scroll_log - 48)
+                    _scroll_ext  = max(0, _scroll_ext - 84)
                 elif event.key == pygame.K_DOWN:
                     _scroll_diag += 84
                     _scroll_log  += 48
+                    _scroll_ext  += 84
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if _rect_banner.collidepoint(event.pos):
                     _overlay_diagnostica = True
-                    _overlay_log = _overlay_perche = False
+                    _overlay_log = _overlay_perche = _overlay_extended = False
 
         # ── Valutazione diagnostica (analizza la telemetria ricevuta da main.ino) ──
         evaluate_diagnostics(T)
@@ -1372,6 +1666,8 @@ def main():
             draw_log_overlay(screen)
         elif _overlay_perche:
             draw_perche_manuale_overlay(screen, T)
+        elif _overlay_extended:
+            draw_extended_overlay(screen)
 
         pygame.display.flip()
         clock.tick(30)
