@@ -84,7 +84,7 @@ const float R_SPECIFIC = 287.05f;
 const float VALORE_BATT_MOTORE_BASSA_V = 13.5f;  
 const float VALORE_BATT_TEENSY_BASSA_V = 4.9f;   
 
-const int SOGLIA_G_SCHIANTO=50;          //m/ss
+const int SOGLIA_G_SCHIANTO=50;          
 const int SEMPLE_VALORI_SCHIANTO=3;      
 
 const int CENTRO_SERVO  = 90;   
@@ -102,7 +102,8 @@ const int GAS_CROCIERA= 1450;
 
 const float MAX_AIRSPEED_X8_km = 45.0f;         
 float VELOCITA_CROCIERA_km  = 60.0;             
-float VELOCITA_AVVICINAMENTO_km= 45.0;         
+float VELOCITA_AVVICINAMENTO_km= 45.0;  
+const float GAS_AVVICINAMENTO = 1250;       
 const float DISTANZA_FRENATA_m = 150.0;        
 float RAGGIO_ACCETTAZIONE_MINIMO_m = 25.0f;     
 
@@ -118,6 +119,8 @@ bool G_limitazioneTermicaAttiva = false;  // true se in questo ciclo il limite t
 const float ALPHA_LIDAR = 0.25f;               // Coefficiente del filtro passa-basso (EMA) sul LIDAR, adimensionale (0-1, più alto = più reattivo/meno filtrato)
 const float ALTEZZA_MAX_LIDAR_m = 6.0f;          
 const float ALTEZZA_MAX_SENSORE_OTTICO_m = 4.0f; 
+const float PITCH_DOWN_FORZATO = -8.0f;
+const float PITCH_UP_FORZATO = 12.0f;
 
 const float COSTANTE_OTTICA = 0.0012; 
 
@@ -292,7 +295,6 @@ void segnalaErrore() {
         delay(100);
     }
 }
-
 
 void segnalaCalibrazione(int pin_led) {
     digitalWrite(pin_led, !digitalRead(pin_led));  // toggle
@@ -685,7 +687,7 @@ void loop()
     if (gps.speed.isValid()) {
         velocita_gps_Ms = gps.speed.mps();  
     } else {
-        velocita_gps_Ms = 0.0f;
+        velocita_gps_Ms = -1.0f;   // Valore negativo indica che la velocità GPS non è valida
     }
 
     // 5. Barometro – lettura altitudine (relativa, dopo sottrazione della tara)
@@ -707,7 +709,7 @@ void loop()
         gasDiBase= GAS_CROCIERA;                         
     } else {                                             
         targetVelocita = VELOCITA_AVVICINAMENTO_km;       
-        gasDiBase= 1250;                                 
+        gasDiBase= GAS_AVVICINAMENTO;                                 
     }
 
     int correzionePitch_g  = 0;    
@@ -1333,14 +1335,14 @@ void calcolaPID(float targetAltitudine, float targetRoll,
 
     if (G_altitudine_m > ALTEZZA_MAX_m) {
         // Sopra la quota massima: forza un pitch negativo (scendi) e riduce il gas al minimo, ignorando il PID normale
-        targetPitch_Auto_g = -8.0;              // -8°, valore fisso
+        targetPitch_Auto_g = PITCH_DOWN_FORZATO;              // -8°, valore fisso
         gasCorrente = GAS_MINIMO; 
         pid_sommaErroriAlt =  0.0;             // Azzera l'integrale per evitare windup
         pid_errorePassatoAlt_ms=  0.0;
         G_pid_altErrore = 0.0; G_pid_altP = 0.0; G_pid_altI = 0.0; G_pid_altD = 0.0;
     } else if (G_altitudine_m < ALTEZZA_MIN_m) {
         // Sotto la quota minima: forza un pitch positivo (sali) e aumenta il gas quasi al massimo
-        targetPitch_Auto_g = 12.0;              // +12°, valore fisso
+        targetPitch_Auto_g = PITCH_UP_FORZATO;              // +12°, valore fisso
         gasCorrente = GAS_MASSIMO - 10; 
         pid_sommaErroriAlt =  0.0;
         pid_errorePassatoAlt_ms =  0.0;
@@ -1417,7 +1419,6 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     G_pid_velErrore = erroreVel_km; G_pid_velP = P_vel; G_pid_velI = I_vel; G_pid_velD = D_vel;
 }
 
-
 // Determina se il drone è "in volo"
 void verifica_drone_in_volo() {          
     if (!droneInVolo) {
@@ -1439,7 +1440,6 @@ void verifica_drone_in_volo() {
     }
 }
 
-
 // Rileva un impatto tramite l'accelerazione lineare totale dell'IMU
 void gestisciSchianto() {
     if (!schianto_sicurezza) {
@@ -1453,7 +1453,6 @@ void gestisciSchianto() {
 
     if (!droneInVolo) return;    // Non controlla schianti se il drone non è ancora considerato in volo (evita falsi positivi a terra)
 
-
     imu::Vector<3> accel = giroscopio.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);   // In m/s^2
     float accelerazioneTotale = sqrt((accel.x() * accel.x()) + (accel.y() * accel.y()) + (accel.z() * accel.z()));   // Modulo vettoriale, in m/s^2
 
@@ -1462,7 +1461,6 @@ void gestisciSchianto() {
     G_accelY = accel.y();
     G_accelZ = accel.z();
     G_accelTotale = accelerazioneTotale;
-
     
     if (accelerazioneTotale > SOGLIA_G_SCHIANTO) {    // Sopra 50 m/s^2
         contatoreImpatto++;
@@ -1489,7 +1487,6 @@ void gestisciSchianto() {
         contatoreImpatto = 0;    // Reset 
     }
 }
-
 
 void aggiornaLidar() {
   // Solo se sotto margine di sicurezza (atterraggio/volo basso) — altrimenti il LIDAR  non è affidabile
@@ -1577,7 +1574,6 @@ void aggiorna_velocita(float Velocita_pitot_Ms, float velocita_gps_Ms) {
     } else {
         G_Groundspeed_ms = 0.0f;
     }
-
  
     if (Velocita_pitot_Ms > 0 && Velocita_pitot_Ms < MAX_AIRSPEED_X8_km/3.6f) {   // N
         G_Airspeed_ms = Velocita_pitot_Ms;   // In m/s

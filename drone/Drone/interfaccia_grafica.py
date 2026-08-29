@@ -1,20 +1,20 @@
 import pygame
 import sys
-import serial  
+import serial
 import threading
 import os
 from collections import deque
 
-SERIAL_PORT = "COM3"  
+SERIAL_PORT = "COM3"
 BAUD_RATE = 9600
 
 pygame.init()
 pygame.mixer.init()
 
-W, H   = 1280, 900
+W, H = 1280, 900
 screen = pygame.display.set_mode((W, H))
 pygame.display.set_caption("GCS – Primary Flight Display")
-clock  = pygame.time.Clock()
+clock = pygame.time.Clock()
 
 CARTELLA_AUDIO = r"C:\Users\Utente\Documents\coding\Fisica-v3-main\drone\Drone\audio_gpws"
 
@@ -27,14 +27,15 @@ C_DIM    = ( 82,  98, 126)  # testo secondario / etichette
 C_WHITE  = (242, 246, 255)  # testo luminoso / valori
 C_GREEN  = ( 40, 210,  88)  # stato OK
 C_YELLOW = (255, 200,   0)  # throttle / HUD
-C_ORANGE = (255, 140,   0)  # diagnostica: livello WARNING (🟠)
+C_ORANGE = (255, 140,   0)  # diagnostica: livello WARNING
 C_RED    = (218,  48,  48)  # allarme / errore
 C_SKY    = ( 28,  96, 178)  # cielo orizzonte
 C_GROUND = (124,  80,  30)  # terra orizzonte
 C_CROSS  = (255, 210,   0)  # crosshair orizzonte
-C_GRAPH_BARO   = (  0, 188, 255)  # linea grafico: baro
-C_GRAPH_LIDAR  = ( 40, 210,  88)  # linea grafico: lidar
-C_GRAPH_FUSA   = (255, 200,   0)  # linea grafico: quota fusa
+C_GRAPH_BARO  = (  0, 188, 255)  # linea grafico: baro
+C_GRAPH_LIDAR = ( 40, 210,  88)  # linea grafico: lidar
+C_GRAPH_FUSA  = (255, 200,   0)  # linea grafico: quota fusa
+
 F_HEAD  = pygame.font.SysFont("consolas", 21, bold=True)  # header principale
 F_TITLE = pygame.font.SysFont("consolas", 13, bold=True)  # titoli pannelli
 F_VAL   = pygame.font.SysFont("consolas", 15, bold=True)  # valori numerici
@@ -42,8 +43,7 @@ F_LABEL = pygame.font.SysFont("consolas", 13)             # etichette
 F_SMALL = pygame.font.SysFont("consolas", 12)             # testo piccolo
 
 
-
-# Cooldown audio (ms) 
+# ── Cooldown audio (ms) ──────────────────────────────────────
 CD_PULL_UP          = 7500
 CD_TERRAIN_PULL_UP  = 5500
 CD_TERRAIN          = 5500
@@ -56,30 +56,29 @@ CD_FLIGHT_SLOW      = 6500
 CD_OVERSPEED        = 11500
 CD_ERRORE           = 8500
 
-# ── Roll 
-ROLL_WARN   = 30     # GIALLO in HUD
-ROLL_CRIT   = 35     # ROSSO  in HUD + "bank_angle.wav"
+# ── Roll ──────────────────────────────────────────────────────
+ROLL_CRIT = 35     # ROSSO  in HUD + "bank_angle.wav"
+ROLL_WARN = ROLL_CRIT - 5  # GIALLO in HUD
+# ── Pitch ─────────────────────────────────────────────────────
+PITCH_CRIT = 20    # ROSSO  in HUD + "pitch.wav"
+PITCH_WARN = PITCH_CRIT - 5  # GIALLO
+# ── Velocità (km/h) ───────────────────────────────────────────
+SPD_STALL   = 22   # < soglia → "stall.wav" + ROSSO
+SPD_AIR_LOW = 35   # < soglia → "air_speed_low.wav" + GIALLO
+SPD_SLOW    = 45   # < soglia → "fligh slow.wav"
 
-# ── Pitch 
-PITCH_WARN  = 15     # GIALLO
-PITCH_CRIT  = 20     # ROSSO  in HUD + "pitch.wav"
+SPD_WARN    = 70   # >= soglia → GIALLO in HUD
+SPD_CRIT    = 90   # >= soglia → ROSSO  in HUD + "overspeed.wav"
 
-# ── Velocità (km/h) 
-SPD_STALL   = 22     # < soglia → "stall.wav" + ROSSO
-SPD_AIR_LOW = 35     # < soglia → "air_speed_low.wav"+ GIALLO
-SPD_SLOW    = 45     # < soglia → "fligh slow.wav"
-SPD_WARN    = 70     # >= soglia → GIALLO in HUD
-SPD_CRIT    = 90     # >= soglia → ROSSO  in HUD + "overspeed.wav"
-
-# ── Discesa (m/s, negativo = scende) 
-VDISCESA_PULL_UP    = -1.0   # + alt < ALT_PULL_UP   → pull_up
+# ── Discesa (m/s, negativo = scende) ─────────────────────────
+VDISCESA_PULL_UP    = -1.0   # + alt < ALT_PULL_UP    → pull_up
 VDISCESA_TERRAIN_PU = -0.5   # + alt < ALT_TERRAIN_PU → terrain pull up
 VDISCESA_TERRAIN    = -0.3   # + alt < ALT_TERRAIN    → terrain
 VDISCESA_DONT_SINK  = -0.3   # + alt < ALT_DONT_SINK  → dont sink
 VDISCESA_SINK_RATE  = -4.0   # qualsiasi quota        → sink rate
 VDISCESA_CALLOUT    = -0.2   # attiva callout quota
 
-# ── Quote (m) 
+# ── Quote (m) ─────────────────────────────────────────────────
 ALT_PULL_UP       =  5
 ALT_TERRAIN_PU    = 10
 ALT_TERRAIN       = 20
@@ -92,88 +91,86 @@ CALLOUT_30_LO, CALLOUT_30_HI = 28, 32
 CALLOUT_20_LO, CALLOUT_20_HI = 18, 22
 CALLOUT_10_LO, CALLOUT_10_HI =  8, 12
 
-# ── Temperatura (°C)
-T_TEENSY_WARN  = 60   # >= soglia → GIALLO
-T_TEENSY_CRIT  = 65   # >= soglia → ROSSO + "errore.wav"
+# ── Temperatura (°C) ──────────────────────────────────────────
 
-T_MOTOR_WARN   = 80   # >= soglia → GIALLO
-T_MOTOR_CRIT   = 85   # >= soglia → ROSSO + "errore.wav"
+T_TEENSY_CRIT = 65   # >= soglia → ROSSO + "errore.wav"
+T_TEENSY_WARN = T_TEENSY_CRIT - 5  # >= soglia → GIALLO
 
-# ── Tensione servo (V) 
+T_MOTOR_CRIT = 85    # >= soglia → ROSSO + "errore.wav"
+T_MOTOR_WARN = T_MOTOR_CRIT - 5  # >= soglia → GIALLO
+
+# ── Tensione servo (V) ────────────────────────────────────────
 SERVO_V_MIN = 4.5    # fuori range → servo ERROR
 SERVO_V_MAX = 6.0
 
-# ── Scale barre batteria (V) 
+# ── Scale barre batteria (V) ──────────────────────────────────
 VBAR_TEENSY_MIN = 4.0
 VBAR_TEENSY_MAX = 6.5
 
-VBAR_MOTOR_MIN  = 12.0
-VBAR_MOTOR_MAX  = 16.8
+VBAR_MOTOR_MIN = 12.0
+VBAR_MOTOR_MAX = 16.8
 
-# ── Distanza target (m)
+# ── Distanza target (m) ───────────────────────────────────────
 DIST_TGT_WARN = 150   # < soglia → GIALLO
 
-# ── Errore rotta (°)
+# ── Errore rotta (°) ──────────────────────────────────────────
 HDG_ERR_WARN = 30     # >= soglia (assoluto) → GIALLO
 HDG_ERR_CRIT = 90     # >= soglia (assoluto) → ROSSO
 
-# ── Storico grafici (numero campioni telemetria conservati)
-HIST_LEN = 120
-
-# ── Satelliti GPS 
+# ── Satelliti GPS ─────────────────────────────────────────────
 SAT_MIN = 5           # < soglia → ROSSO
 
-# ── Throttle 
+# ── Throttle ──────────────────────────────────────────────────
 THR_WARN = 0.8        # >= soglia → barra GIALLA
-
+SOGLIA_G_SCHIANTO = 50          # m/s² (accelerazione IMU oltre la quale viene rilevato uno schianto)
 GAS_MINIMO  = 1000
-GAS_MASSIMO = 2000   
+GAS_MASSIMO = 2000
 
-# ── Orizzonte artificiale 
+# ── Orizzonte artificiale ────────────────────────────────────
 PFD_CX, PFD_CY, PFD_R = W // 2, 245, 142
 
-# ── Box velocità e quota ai lati dell'orizzonte 
+# ── Box velocità e quota ai lati dell'orizzonte ──────────────
 BOX_W, BOX_H, BOX_GAP = 66, 34, 18
 SPD_BOX = pygame.Rect(PFD_CX - PFD_R - BOX_GAP - BOX_W, PFD_CY - BOX_H // 2, BOX_W, BOX_H)
 ALT_BOX = pygame.Rect(PFD_CX + PFD_R + BOX_GAP,          PFD_CY - BOX_H // 2, BOX_W, BOX_H)
 
-# ── Pannelli laterali 
-POWER_PANEL = pygame.Rect( 24, 108, 378, 272)
-TEMP_PANEL  = pygame.Rect( 24, 390, 378, 122)
-SPEED_PANEL = pygame.Rect( 24, 522, 378, 182)
-SERVI_PANEL = pygame.Rect(878, 108, 378, 200)
-VSERV_PANEL = pygame.Rect(878, 320, 378, 193)
-NAV_PANEL   = pygame.Rect(428, 522, 424, 140)
+# ── Pannelli laterali ─────────────────────────────────────────
+POWER_PANEL       = pygame.Rect( 24, 108, 378, 272)
+TEMP_PANEL        = pygame.Rect( 24, 390, 378, 122)
+SPEED_PANEL       = pygame.Rect( 24, 522, 378, 182)
+SERVI_PANEL       = pygame.Rect(878, 108, 378, 200)
+VSERV_PANEL       = pygame.Rect(878, 320, 378, 193)
+NAV_PANEL         = pygame.Rect(428, 522, 424, 140)
 ORIENTATION_PANEL = pygame.Rect(428, 391, 424, 100)
-BATTERY_PANNEL =pygame.Rect(878, 522, 378, 180)
+BATTERY_PANNEL    = pygame.Rect(878, 522, 378, 180)
 
-# ── Nuova riga in basso: diagnostica sensori/navigazione avanzata + grafico quote
+# ── Riga in basso: diagnostica sensori/navigazione + grafico quote ──
 DIAG_PANEL      = pygame.Rect(24, 712, 1232, 100)
-ALT_GRAPH_PANEL = pygame.Rect(644, 712, 612, 172)
 
-# ── Colonne servi nel pannello SERVI
+
+# ── Colonne servi nel pannello SERVI ──────────────────────────
 SERVI_X   = SERVI_PANEL.x + 28
 SERVI_Y   = SERVI_PANEL.y + 52
 SERVI_GAP = 88
 
 
-_serial_lock    = threading.Lock()
-_ser_instance   = None
+_serial_lock  = threading.Lock()
+_ser_instance = None
 
 
 T = {
     "mode":       "ATTESA",
     "serial_ok":  False,
     "satellites":  0,
-    "v_motor":     0.0,   
-    "throttle":    0.0,    
+    "v_motor":     0.0,
+    "throttle":    0.0,
     "pitch":       0.0,
     "roll":        0.0,
     "yaw":         0.0,
-    "altitude":    0.0,   
-    "spd_pitot":   0.0,  
-    "spd_gps":     0.0,   
-    "spd_ms":      0.0,   
+    "altitude":    0.0,
+    "spd_pitot":   0.0,
+    "spd_gps":     0.0,
+    "spd_ms":      0.0,
     "dist_target": 0.0,
     "hdg_target":  0.0,
     "roll_target": 0.0,
@@ -214,7 +211,7 @@ T = {
     "thermal_limit":   GAS_MASSIMO,
     "alt_lidar_raw":   0.0,
     "alt_baro_raw":    0.0,
-    # ── NUOVI campi (v2 firmware) ─────────────────────────────────────
+    # ── Campi v2 firmware ─────────────────────────────────────
     "spd_ground":      0.0,   # Groundspeed fusa [km/h] (usata dal controllore L1)
     "fw_millis":       0,     # millis() firmware al momento dell'invio TEL1
     "tel1_packet_num": 0,     # numero progressivo pacchetto TEL1
@@ -254,22 +251,19 @@ T4 = {  # $4, — GPS esteso, barometro esteso, pitot grezzo, IMU estesa, RC 4-1
     "rc_ext": [0] * 13,  # canali radio 4-16 (canali 1-3 già in T)
 }
 
-# Storici per i grafici (aggiornati ad ogni pacchetto telemetria valido)
-HIST_BARO  = deque(maxlen=HIST_LEN)
-HIST_LIDAR = deque(maxlen=HIST_LEN)
-HIST_FUSA  = deque(maxlen=HIST_LEN)
+
+
 
 # ================================================================
 #  SISTEMA DIAGNOSTICO CENTRALIZZATO
-#  (analisi soglie/failsafe derivata da main.ino — vedi riepilogo
-#   in fondo al file per la mappatura completa condizione → alert)
+#  (analisi soglie/failsafe derivata da main.ino — vedi commenti
+#   nelle singole sezioni per la mappatura condizione → alert)
 # ================================================================
-import time as _time_mod
 from datetime import datetime as _dt
 
 # Soglie duplicate da main.ino, usate SOLO per la spiegazione al pilota
 # (il firmware resta l'unica fonte di verità per le decisioni di volo)
-FW_VALORE_BATT_MOTORE_BASSA   = 11.8   # V   (VALORE_BATT_MOTORE_BASSA)
+FW_VALORE_BATT_MOTORE_BASSA   = 13.5   # V   (VALORE_BATT_MOTORE_BASSA_V)
 FW_VALORE_BATT_TEENSY_BASSA   = 4.9    # V   (VALORE_BATT_TEENSY_BASSA)
 FW_T_MOTORE_THROTTLE_START    = 70.0   # °C  (T_MOTORE_THROTTLE_START)
 FW_T_MOTORE_THROTTLE_END      = 90.0   # °C  (T_MOTORE_THROTTLE_END)
@@ -277,9 +271,13 @@ FW_GAS_MASSIMO                = 2000   # µs  (GAS_MASSIMO)
 FW_GAS_MINIMO                 = 1200   # µs  (GAS_MINIMO)
 FW_ALTEZZA_MAX_LIDAR          = 6.0    # m   (ALTEZZA_MAX_LIDAR)
 FW_ALTEZZA_MAX_SENSORE_OTTICO = 4.0    # m   (ALTEZZA_MAX_SENSORE_OTTICO)
-FW_SAT_MIN_FIX                = 5      # satelliti minimi per un fix affidabile (soglia GUI, SAT_MIN)
+FW_SAT_MIN_FIX                = 5      # satelliti minimi per un fix affidabile (soglia GUI)
 FW_PITOT_DIFF_ANOMALIA_KMH    = 25.0   # soglia derivata GUI: divergenza pitot/GPS sospetta
 FW_PITOT_DURATA_ANOMALIA_S    = 3.0    # secondi di persistenza richiesti prima di segnalare
+FW_MAX_AIRSPEED_X8_KMH        = 45.0   # km/h (MAX_AIRSPEED_X8_km)
+FW_DISTANZA_FRENATA           = 150.0  # m   (DISTANZA_FRENATA_m)
+PITCH_UP_FORZATO = 12.0   # °   (PITCH_UP_FORZATO)
+PITCH_DOWN_FORZATO = -8.0  # °   (PITCH_DOWN_FORZATO)
 
 LIVELLI = {
     "CRITICAL": {"icona": "🔴", "colore": C_RED,    "prio": 0, "tag": "CRITICAL"},
@@ -291,20 +289,16 @@ LIVELLI = {
 
 _alert_lock  = threading.Lock()
 alert_attivi = {}                 # codice -> dict con i dettagli dell'alert attivo
-event_log    = deque(maxlen=300)  # (ora_str, livello, testo) — mostrato in GUI (ultimi N) e conservato per lo scroll
+event_log    = deque(maxlen=300)  # (ora_str, livello, testo) — mostrato in GUI e conservato per lo scroll
+
 
 def _ora():
     return _dt.now().strftime("%H:%M:%S")
 
+
 def add_alert(codice, livello, titolo, descrizione="", causa="", valore="", soglia="",
               azione="", durata=None, codice_errore=None, dettaglio_terminale=None):
-    """
-    Sistema centralizzato di notifiche diagnostiche.
-    Attiva/aggiorna un alert identificato da 'codice'. La GENERAZIONE di un evento
-    nel log e sul terminale avviene SOLO alla transizione inattivo -> attivo, per
-    evitare di duplicare lo stesso messaggio ad ogni frame; i valori numerici
-    dell'alert vengono comunque aggiornati in tempo reale per la GUI.
-    """
+    
     global alert_attivi
     with _alert_lock:
         nuovo = codice not in alert_attivi
@@ -317,14 +311,15 @@ def add_alert(codice, livello, titolo, descrizione="", causa="", valore="", sogl
         icona = LIVELLI[livello]["icona"]
         event_log.append((_ora(), livello, f"{icona} {titolo}"))
         print(f"[{_ora()}][{LIVELLI[livello]['tag']}][{codice}] {titolo}")
-        if descrizione:     print(f"    {descrizione}")
-        if causa:            print(f"    Causa: {causa}")
-        if valore:           print(f"    Valore attuale: {valore}")
-        if soglia:           print(f"    Soglia: {soglia}")
-        if azione:           print(f"    Azione consigliata: {azione}")
-        if codice_errore:    print(f"    Codice errore: {codice_errore}")
+        if descrizione:  print(f"    {descrizione}")
+        if causa:        print(f"    Causa: {causa}")
+        if valore:       print(f"    Valore attuale: {valore}")
+        if soglia:       print(f"    Soglia: {soglia}")
+        if azione:       print(f"    Azione consigliata: {azione}")
+        if codice_errore: print(f"    Codice errore: {codice_errore}")
         if dettaglio_terminale:
             print(dettaglio_terminale)
+
 
 def clear_alert(codice, messaggio_ok=None):
     """Disattiva un alert. Se era attivo, registra un evento di chiusura (🟢 risolto)."""
@@ -336,15 +331,18 @@ def clear_alert(codice, messaggio_ok=None):
         event_log.append((_ora(), "OK", f"🟢 {titolo} — RISOLTO"))
         print(f"[{_ora()}][OK][{codice}] {titolo} — risolto")
 
+
 def alert_principale():
     """Ritorna l'alert a priorità più alta attualmente attivo, o None se nessun allarme."""
     if not alert_attivi:
         return None
     return max(alert_attivi.items(), key=lambda kv: -LIVELLI[kv[1]["livello"]]["prio"])[1]
 
+
 def alert_ordinati():
     """Lista (codice, alert) ordinata per priorità (CRITICAL prima)."""
     return sorted(alert_attivi.items(), key=lambda kv: LIVELLI[kv[1]["livello"]]["prio"])
+
 
 def motivi_blocco_manuale(t):
     """
@@ -359,84 +357,104 @@ def motivi_blocco_manuale(t):
         motivi.append(("SCHIANTO RILEVATO", "Gas forzato al minimo — sblocco possibile solo da radiocomando (canale 5 in basso)"))
     return motivi
 
+
 # ── Stato overlay/interazione GUI (popup, pannelli scrollabili) ──────────
-_rect_banner        = pygame.Rect(0, 0, 0, 0)
+_rect_banner         = pygame.Rect(0, 0, 0, 0)
 _overlay_diagnostica = False
 _overlay_log         = False
 _overlay_perche      = False
-_overlay_extended    = False   # NUOVO: schermata "TELEMETRIA ESTESA" (TEL2/TEL3/TEL4)
+_overlay_extended    = False   # schermata "TELEMETRIA ESTESA" (TEL2/TEL3/TEL4)
 _scroll_diag         = 0
 _scroll_log          = 0
-_scroll_ext          = 0       # NUOVO
+_scroll_ext          = 0
 
 # ── Stato interno per diagnostiche derivate (non presenti direttamente
 #    nella telemetria, calcolate qui a partire dai dati ricevuti) ────────
 _pitot_anomalia_dal = None      # timestamp (ms) di inizio divergenza pitot/GPS persistente
 _relay_prec         = False
-_last_tel1_packet   = None      # NUOVO: ultimo numero progressivo pacchetto TEL1 ricevuto
+_last_tel1_packet   = None      # ultimo numero progressivo pacchetto TEL1 ricevuto
+_modalita_prec      = None      # modalità di volo del frame precedente (per rilevare i cambi)
 
 
 def evaluate_diagnostics(t):
-    """
-    Valuta ad ogni frame lo stato ricevuto da main.ino e aggiorna gli alert attivi.
-    Ogni condizione qui sotto è ricavata da una soglia/decisione REALMENTE presente
-    nel firmware (vedi commenti); le diagnostiche "derivate" (es. Pitot) sono
-    esplicitamente etichettate come tali e non dichiarano un guasto hardware
-    certo se il firmware non è in grado di rilevarlo direttamente.
-    """
-    global _pitot_anomalia_dal, _relay_prec
+    global _pitot_anomalia_dal, _relay_prec, _modalita_prec
 
-    # ── 1. FAILSAFE (bit0 codiceAllarme, main.ino: ricevente.read(...,&failsafe,...)) ──
     if t["alarm_failsafe"]:
         add_alert("failsafe", "CRITICAL", "FAILSAFE ATTIVO",
                    causa="Perdita del segnale radio (pacchetto SBUS non valido)",
-                   valore="Modalità forzata: FAILSAFE (controllo automatico verso il target)",
+                   valore="Modalità forzata: FAILSAFE (controllo automatico verso il target impostato)",
                    azione="Verificare trasmettitore/ricevente e ripristinare il collegamento radio.")
     else:
         clear_alert("failsafe", "FAILSAFE DISATTIVATO")
 
-    # ── 2. SCHIANTO (bit4, gestisciSchianto(): accelerazione IMU > SOGLIA_G_SCHIANTO) ──
-    if t["alarm_crash"]:
-        add_alert("crash", "CRITICAL", "SCHIANTO RILEVATO",
-                   causa="Accelerazione IMU oltre la soglia di impatto per 3 campioni consecutivi",
-                   valore="Gas: NEUTRO forzato — servi interni staccati",
-                   azione="Sblocco possibile SOLO da radiocomando (canale 5 riportato in basso).")
+    if "crash_safety_enabled" in t and not t["crash_safety_enabled"]:
+        add_alert("crash_safety_off", "WARNING", "RILEVAMENTO SCHIANTO DISATTIVATO",
+                   causa="Sicurezza schianto disabilitata da comando terra (SICUREZZA_SCHIANTO_OFF)",
+                   valore="Nessun controllo del IMU sull'impatto in corso",
+                   azione="Riattivare la sicurezza schianto se non intenzionale dal terra") 
     else:
-        clear_alert("crash", "SBLOCCO EMERGENZA ESEGUITO")
+        clear_alert("crash_safety_off", "RILEVAMENTO SCHIANTO ATTIVO")
 
-    # ── 3. PROTEZIONE TERMICA MOTORE (gasMaxTermico(), soglie 70→90°C) ──
-    if t["thermal_limit"] < FW_GAS_MASSIMO:
+    if t["alarm_crash"]:
+        rc5_info = f"  |  Canale RC5: {t['rc_ch5']}" if "rc_ch5" in t else ""
+        add_alert("crash", "CRITICAL", "SCHIANTO RILEVATO",
+                   causa=f"Accelerazione IMU oltre la soglia di impatto: {SOGLIA_G_SCHIANTO} per 3 campioni consecutivi",
+                   valore="Gas: NEUTRO forzato — servi interni ED esterni staccati" + rc5_info,
+                   azione="Sblocco possibile SOLO da radiocomando: portare il canale 5 sotto 992 "
+                          "(riarma e ricentra automaticamente tutti i servi).")
+    else:
+        clear_alert("crash", "SBLOCCO EMERGENZA ESEGUITO (servi riarmati e ricentrati)")
+
+    thermal_enabled = t.get("thermal_safety_enabled", True)
+    if not thermal_enabled:
+        if t["t_motor"] >= FW_T_MOTORE_THROTTLE_START:
+            add_alert("motore_termico", "CRITICAL", "PROTEZIONE TERMICA DISATTIVATA — MOTORE SENZA LIMITE",
+                       causa="Temperatura oltre soglia di intervento MA sistema_sicurezza_temp è disattivato",
+                       valore=f"Temperatura: {t['t_motor']:.1f} °C  |  Gas erogato: {t['pid_gas']*100:.0f} % (non limitato) da firmware",
+                       soglia=f"Soglia normalmente attiva da {FW_T_MOTORE_THROTTLE_START:.0f} °C",
+                       azione="Riattivare la protezione termica (SICUREZZA_TEMP_ON) o ridurre manualmente il gas.")
+        else:
+            clear_alert("motore_termico", "PROTEZIONE TERMICA DISATTIVATA (temperatura comunque nella norma)")
+            
+    elif t.get("thermal_limiting_active", t["thermal_limit"] < FW_GAS_MASSIMO):
         pct_limite = round((t["thermal_limit"] - FW_GAS_MINIMO) / (FW_GAS_MASSIMO - FW_GAS_MINIMO) * 100)
         add_alert("motore_termico", "WARNING", "POTENZA MOTORE LIMITATA",
                    causa="PROTEZIONE TERMICA ATTIVA",
-                   valore=f"Temperatura: {t['t_motor']:.1f} °C  |  Gas erogato: {t['pid_gas']*100:.0f} %",
+                   valore=f"Temperatura: {t['t_motor']:.1f} °C  |  Gas erogato: {t['pid_gas']*100:.0f} % (limitato) da firmware",
                    soglia=f"Inizio limitazione: {FW_T_MOTORE_THROTTLE_START:.0f} °C — Limite massimo: {FW_T_MOTORE_THROTTLE_END:.0f} °C",
                    azione="Ridurre il regime motore o attendere il raffreddamento. "
                           f"Gas massimo consentito ora: {t['thermal_limit']} µs (~{pct_limite}%).")
     else:
         clear_alert("motore_termico", "POTENZA MOTORE RIPRISTINATA")
 
-    # ── 4. BATTERIA MOTORE (bit1, VALORE_BATT_MOTORE_BASSA = 11.8 V) ──
-    if t["alarm_batt_motor"]:
+    power_enabled = t.get("power_safety_enabled", True)
+    if not power_enabled:
+        add_alert("alimentazione_safety_off", "WARNING", "DIAGNOSTICA ALIMENTAZIONE DISATTIVATA",
+                   causa="Sicurezza alimentazione disabilitata da comando (SICUREZZA_ALIMENTAZIONE_OFF)",
+                   valore="Nessun controllo su batteria motore/Teensy né failover relè",
+                   azione="Riattivare (SICUREZZA_ALIMENTAZIONE_ON) se non intenzionale.")
+    else:
+        clear_alert("alimentazione_safety_off", "DIAGNOSTICA ALIMENTAZIONE ATTIVA")
+
+    if power_enabled and t["alarm_batt_motor"]:
         add_alert("batt_motore", "WARNING", "BATTERIA MOTORE BASSA",
                    causa="Tensione sotto la soglia minima operativa",
                    valore=f"Tensione: {t['v_motor']:.2f} V",
                    soglia=f"{FW_VALORE_BATT_MOTORE_BASSA:.2f} V",
-                   azione="Atterrare e sostituire/ricaricare la batteria di potenza.")
+                   azione="Atterrare e sostituire/ricaricare la batteria di potenza e diminuire il regime motore.")
     else:
         clear_alert("batt_motore", "BATTERIA MOTORE OK")
 
-    # ── 5. BATTERIA TEENSY / AVIONICA (bit3, VALORE_BATT_TEENSY_BASSA = 4.9 V) ──
-    if t["alarm_batt_teensy"]:
+    if power_enabled and t["alarm_batt_teensy"]:
         add_alert("batt_teensy", "WARNING", "BATTERIA AVIONICA (TEENSY) BASSA",
                    causa="Tensione sotto la soglia minima operativa",
                    valore=f"Tensione: {t['v_teensy']:.2f} V  |  Failover relè: {'ATTIVO' if t['relay'] else 'in attesa'}",
                    soglia=f"{FW_VALORE_BATT_TEENSY_BASSA:.2f} V",
-                   azione="Verificare BEC/regolatore avionica; il relè commuta automaticamente sulla batteria motore.")
+                   azione="Verificare BEC/regolatore avionica; il relè commuta automaticamente sulla batteria motore. "
+                          "NOTA: i servi interni vengono staccati automaticamente per risparmiare corrente.")
     else:
         clear_alert("batt_teensy", "BATTERIA AVIONICA OK")
 
-    # ── 6. FAILOVER RELÈ (transizione OFF->ON di 'relay', bit2/campo 35) ──
     if t["relay"] and not _relay_prec:
         add_alert("relay_on", "INFO", "FAILOVER ALIMENTAZIONE ATTIVATO",
                    causa="Batteria avionica (Teensy) sotto soglia",
@@ -446,25 +464,61 @@ def evaluate_diagnostics(t):
         clear_alert("relay_on", "FAILOVER ALIMENTAZIONE DISATTIVATO")
     _relay_prec = t["relay"]
 
-    # ── 7. SERVI IN ANOMALIA DI CORRENTE (diagnosticaServi(), soglie 0.5–2500 mA) ──
-    servi_ko = [n for n, ok in (("Int SX", t["ok_isx"]), ("Int DX", t["ok_idx"]),
-                                 ("Est SX", t["ok_esx"]), ("Est DX", t["ok_edx"])) if not ok]
-    if servi_ko:
-        add_alert("servi_anomalia", "WARNING" if len(servi_ko) < 4 else "CRITICAL",
-                   "ANOMALIA CORRENTE SERVO",
-                   causa="Corrente fuori range (0.5–2500 mA) per oltre 5 letture consecutive",
-                   valore="Servi in anomalia: " + ", ".join(servi_ko),
-                   azione="Il mixer si è riconfigurato automaticamente sui servi rimanenti; "
-                          "verificare cablaggio/meccanica dei servi indicati appena possibile.")
+    servo_enabled = t.get("servo_safety_enabled", True)
+    if not servo_enabled:
+        add_alert("servo_safety_off", "WARNING", "DIAGNOSTICA CORRENTE SERVI DISATTIVATA",
+                   causa="Sicurezza servi disabilitata da comando (SICUREZZA_SERVI_OFF)",
+                   valore="Tutti i servi sono considerati forzatamente OK, nessuna anomalia rilevabile",
+                   azione="Riattivare (SICUREZZA_SERVI_ON) se non intenzionale.")
+        clear_alert("servi_anomalia", "DIAGNOSTICA SERVI DISATTIVATA")
+        clear_alert("servi_risparmio_batteria", "DIAGNOSTICA SERVI DISATTIVATA")
     else:
-        clear_alert("servi_anomalia", "SERVI RIPRISTINATI")
+        clear_alert("servo_safety_off", "DIAGNOSTICA CORRENTE SERVI ATTIVA")
 
-    # ── 8. GPS (satelliti/fix — campo 33 satellites, 0 se fix non valido) ──
+        def _is_anomalia_reale(nome_corrente):
+            if nome_corrente in t:
+                return t[nome_corrente] < 0.5 or t[nome_corrente] > 2500.0
+            return None  # sconosciuto
+
+        servi_ko_reali = []
+        servi_off_batteria = []
+        candidati = (("Int SX", t["ok_isx"], "i_int_sx"), ("Int DX", t["ok_idx"], "i_int_dx"),
+                     ("Est SX", t["ok_esx"], "i_est_sx"), ("Est DX", t["ok_edx"], "i_est_dx"))
+        for nome, ok, campo_corrente in candidati:
+            if ok:
+                continue
+            anomalia_reale = _is_anomalia_reale(campo_corrente)
+            e_interno = nome.startswith("Int")
+            if anomalia_reale is False and e_interno and t.get("alarm_batt_teensy", False):
+                servi_off_batteria.append(nome)
+            elif anomalia_reale is None and e_interno and t.get("alarm_batt_teensy", False):
+                servi_off_batteria.append(nome)
+            else:
+                servi_ko_reali.append(nome)
+
+        if servi_ko_reali:
+            add_alert("servi_anomalia", "WARNING" if len(servi_ko_reali) < 4 else "CRITICAL",
+                       "ANOMALIA CORRENTE SERVO",
+                       causa="Corrente fuori range (0.5–2500 mA) per oltre 5 letture consecutive",
+                       valore="Servi in anomalia: " + ", ".join(servi_ko_reali),
+                       azione="Il mixer si è riconfigurato automaticamente sui servi rimanenti; "
+                              "verificare cablaggio/meccanica dei servi indicati appena possibile.")
+        else:
+            clear_alert("servi_anomalia", "SERVI RIPRISTINATI")
+
+        if servi_off_batteria:
+            add_alert("servi_risparmio_batteria", "INFO", "SERVI INTERNI STACCATI (RISPARMIO BATTERIA)",
+                       causa="Batteria Teensy bassa: il mixer disattiva i servi interni per risparmiare corrente",
+                       valore="Servi disattivati: " + ", ".join(servi_off_batteria),
+                       azione="Non è un guasto meccanico/elettrico: verrà ripristinato al rientro della tensione Teensy.")
+        else:
+            clear_alert("servi_risparmio_batteria", "SERVI INTERNI RIATTIVATI")
+
     if t["satellites"] == 0:
         add_alert("gps_fix", "WARNING", "GPS NON DISPONIBILE",
                    causa="Nessun fix GPS valido",
                    valore="Satelliti: 0",
-                   azione="Attendere l'acquisizione satellitare; la navigazione automatica non è affidabile.")
+                   azione="Attendere l'acquisizione satellitare; la navigazione automatica non è affidabile spera che non perdi il drone.")
     elif t["satellites"] < FW_SAT_MIN_FIX:
         add_alert("gps_fix", "INFO", "GPS SEGNALE DEBOLE",
                    causa="Numero di satelliti sotto il margine di sicurezza consigliato",
@@ -473,7 +527,14 @@ def evaluate_diagnostics(t):
     else:
         clear_alert("gps_fix", "GPS FIX ACQUISITO")
 
-    # ── 9. LIDAR — distinzione "non usato per range" vs "guasto" (aggiornaLidar()) ──
+    if "gps_speed_valid" in t and not t["gps_speed_valid"]:
+        add_alert("gps_speed_invalid", "INFO", "VELOCITÀ GPS NON VALIDA",
+                   causa="gps.speed.isValid() è falso: il ricevitore non fornisce una velocità attendibile",
+                   valore="Velocità al suolo calcolata come 0 (o da flusso ottico se disponibile)",
+                   azione="Nessuna azione immediata; il sistema usa il fallback disponibile.")
+    else:
+        clear_alert("gps_speed_invalid", "VELOCITÀ GPS VALIDA")
+
     if not t["sensor_lidar_ok"]:
         add_alert("lidar", "WARNING", "LIDAR NON DISPONIBILE",
                    causa="Inizializzazione del sensore non riuscita in fase di avvio",
@@ -482,42 +543,22 @@ def evaluate_diagnostics(t):
         add_alert("lidar", "STATUS", "LIDAR NON UTILIZZATO",
                    causa="Quota fuori dall'intervallo operativo del sensore (normale in crociera)",
                    valore=f"Quota: {t['alt_baro_raw']:.1f} m", soglia=f"{FW_ALTEZZA_MAX_LIDAR:.0f} m",
-                   azione="Nessuna azione: condizione attesa, non è un errore.")
+                   azione="Nessuna azione: condizione attesa, NON è un errore.")
     else:
         clear_alert("lidar")
 
-    # ── 10. FLUSSO OTTICO — stessa distinzione (velocità_flusso_ottico()) ──
     if not t["sensor_optflow_ok"]:
         add_alert("optflow", "WARNING", "FLUSSO OTTICO NON DISPONIBILE",
                    causa="Inizializzazione del sensore PMW3901 non riuscita in fase di avvio",
                    azione="Il sistema prosegue senza questa sorgente di velocità; verificare i cavi SPI al prossimo atterraggio.")
-    elif t["opt_vx"] < 0.0 and t["opt_vy"] < 0.0 and t["altitude"] > FW_ALTEZZA_MAX_SENSORE_OTTICO:
+    elif t["altitude"] > FW_ALTEZZA_MAX_SENSORE_OTTICO:
         add_alert("optflow", "STATUS", "FLUSSO OTTICO NON UTILIZZATO",
                    causa="Quota fuori dall'intervallo operativo del sensore (normale sopra i 4 m)",
                    valore=f"Quota: {t['altitude']:.1f} m", soglia=f"{FW_ALTEZZA_MAX_SENSORE_OTTICO:.0f} m",
-                   azione="Nessuna azione: condizione attesa, non è un errore.")
+                   azione="Nessuna azione: condizione attesa, NON è un errore.")
     else:
         clear_alert("optflow")
 
-    # ── 11. ANOMALIA PITOT (DIAGNOSTICA DERIVATA — main.ino non ha un check esplicito) ──
-    diff = abs(t["spd_pitot"] - t["spd_gps"])
-    if t["in_flight"] and diff >= FW_PITOT_DIFF_ANOMALIA_KMH:
-        if _pitot_anomalia_dal is None:
-            _pitot_anomalia_dal = pygame.time.get_ticks()
-        durata_s = (pygame.time.get_ticks() - _pitot_anomalia_dal) / 1000.0
-        if durata_s >= FW_PITOT_DURATA_ANOMALIA_S:
-            add_alert("pitot_anomalia", "WARNING", "POSSIBILE ANOMALIA PITOT",
-                       causa="Divergenza persistente tra velocità Pitot e velocità GPS (diagnostica derivata, non un check firmware)",
-                       valore=f"Pitot: {t['spd_pitot']:.1f} km/h  |  GPS: {t['spd_gps']:.1f} km/h  |  Differenza: {diff:.1f} km/h",
-                       soglia=f"{FW_PITOT_DIFF_ANOMALIA_KMH:.0f} km/h per oltre {FW_PITOT_DURATA_ANOMALIA_S:.0f} s",
-                       azione="Possibili cause: Pitot ostruito, perdita di pressione, errore del sensore. Verificare a terra.",
-                       dettaglio_terminale=f"[DIAGNOSTIC][PITOT]\nPitot: {t['spd_pitot']:.1f} km/h\nGPS: {t['spd_gps']:.1f} km/h\n"
-                                            f"Differenza: {diff:.1f} km/h\nDurata anomalia: {durata_s:.1f} s")
-    else:
-        _pitot_anomalia_dal = None
-        clear_alert("pitot_anomalia", "VELOCITÀ PITOT/GPS COERENTI")
-
-    # ── 12. PACCHETTI TEL1 PERSI (diagnostica derivata dal contatore progressivo, campo 45) ──
     if t["tel1_lost_count"] > 0:
         add_alert("tel1_lost", "INFO", "PACCHETTI TELEMETRIA PERSI",
                    causa="Salti rilevati nel numero progressivo del pacchetto TEL1 (radio LoRa)",
@@ -525,6 +566,81 @@ def evaluate_diagnostics(t):
                    azione="Verificare qualità del collegamento LoRa/antenne se il numero cresce rapidamente.")
     else:
         clear_alert("tel1_lost")
+
+    if "distance_to_target" in t:
+        if t["distance_to_target"] > FW_DISTANZA_FRENATA:
+            add_alert("fase_volo", "STATUS", "FASE: CROCIERA",
+                       causa=f"Distanza dal target ({t['distance_to_target']:.0f} m) oltre la distanza di frenata",
+                       valore="Velocità target: crociera  |  Gas di base: crociera",
+                       soglia=f"{FW_DISTANZA_FRENATA:.0f} m",
+                       azione="Nessuna azione: fase operativa normale.")
+        else:
+            add_alert("fase_volo", "STATUS", "FASE: AVVICINAMENTO",
+                       causa=f"Distanza dal target ({t['distance_to_target']:.0f} m) sotto la distanza di frenata",
+                       valore="Velocità target: avvicinamento  |  Gas di base: avvicinamento",
+                       soglia=f"{FW_DISTANZA_FRENATA:.0f} m",
+                       azione="Nessuna azione: fase operativa normale.")
+
+    if "flight_mode" in t:
+        stato_attuale = 3 if t["alarm_failsafe"] else t["flight_mode"]
+        if _modalita_prec is not None and stato_attuale != _modalita_prec:
+            nomi = {1: "MANUALE", 2: "AUTO", 3: "FAILSAFE"}
+            add_alert("pid_reset", "INFO", "PID RESETTATO (cambio modalità di volo)",
+                       causa=f"Transizione modalità: {nomi.get(_modalita_prec, _modalita_prec)} → {nomi.get(stato_attuale, stato_attuale)}",
+                       valore="Integrali e derivate di quota/pitch/roll/velocità azzerati",
+                       azione="Nessuna azione: comportamento atteso ad ogni cambio modalità.")
+        _modalita_prec = stato_attuale
+
+
+    if "pid_target_pitch_auto" in t and "pid_alt_error" in t:
+        tp = t["pid_target_pitch_auto"]
+        ae = t["pid_alt_error"]
+        alt_info = f"  |  Quota attuale: {t['altitude']:.1f} m" if "altitude" in t else ""
+        if abs(tp - PITCH_DOWN_FORZATO) < 0.05 and abs(ae) < 0.001:
+            add_alert("alt_override", "CRITICAL", "QUOTA MASSIMA SUPERATA — PICCHIATA FORZATA",
+                       causa="G_altitudine_m > ALTEZZA_MAX_m: il PID quota è bypassato dal firmware",
+                       valore=f"Pitch forzato: {PITCH_DOWN_FORZATO}° (picchiata)  |  Gas forzato: GAS_MINIMO{alt_info}",
+                       azione="Comportamento di sicurezza del firmware, non un guasto: il drone sta scendendo "
+                              "forzatamente per rientrare sotto il limite di quota massima.")
+        elif abs(tp - PITCH_UP_FORZATO) < 0.05 and abs(ae) < 0.001:
+            add_alert("alt_override", "CRITICAL", "QUOTA MINIMA VIOLATA — CABRATA FORZATA",
+                       causa="G_altitudine_m < ALTEZZA_MIN_m: il PID quota è bypassato dal firmware",
+                       valore=f"Pitch forzato: {PITCH_UP_FORZATO}° (cabrata)  |  Gas forzato: quasi GAS_MASSIMO{alt_info}",
+                       azione="Comportamento di sicurezza del firmware, non un guasto: il drone sta salendo "
+                              "forzatamente per rientrare sopra il limite di quota minima. Attenzione a stallo/ostacoli.")
+        else:
+            clear_alert("alt_override", "QUOTA NEL RANGE NORMALE (PID attivo)")
+
+    esterni_attivi = t["ok_esx"] and t["ok_edx"]
+    interni_attivi = t["ok_isx"] and t["ok_idx"]
+    if esterni_attivi and interni_attivi:
+        clear_alert("mixer_degradato", "MIXER NORMALE (interni=pitch, esterni=roll)")
+    elif esterni_attivi and not interni_attivi:
+        add_alert("mixer_degradato", "WARNING", "MIXER DEGRADATO — SOLO SERVI ESTERNI",
+                   causa="Servi interni non disponibili (guasto o staccati)",
+                   valore="I servi esterni ora comandano pitch+roll combinati",
+                   azione="Autorità di controllo ridotta. Ripristinare i servi interni appena possibile.")
+    elif interni_attivi and not esterni_attivi:
+        add_alert("mixer_degradato", "WARNING", "MIXER DEGRADATO — SOLO SERVI INTERNI",
+                   causa="Servi esterni non disponibili (guasto o staccati)",
+                   valore="I servi interni ora comandano pitch+roll combinati",
+                   azione="Autorità di controllo ridotta. Ripristinare i servi esterni appena possibile.")
+    else:
+        add_alert("mixer_degradato", "CRITICAL", "PERDITA TOTALE CONTROLLO ASSETTO",
+                   causa="Sia i servi interni che quelli esterni sono in anomalia/staccati contemporaneamente",
+                   valore="Il mixer non invia più alcun comando a pitch/roll (return anticipato nel firmware)",
+                   azione="EMERGENZA: nessun controllo di assetto disponibile. Atterraggio/recupero immediato.")
+
+    if "takeoff_speed_ok" in t and "takeoff_alt_ok" in t and not t["in_flight"]:
+        if t["takeoff_speed_ok"] and t["takeoff_alt_ok"]:
+            add_alert("decollo_conferma", "INFO", "DECOLLO IN CORSO DI CONFERMA",
+                       causa="Velocità e quota di decollo raggiunte, in attesa del debounce (1.5 s) prima di droneInVolo=true",
+                       valore="Condizioni di decollo soddisfatte",
+                       azione="Nessuna azione: comportamento atteso, la conferma è imminente.")
+        else:
+            clear_alert("decollo_conferma", "CONDIZIONI DI DECOLLO NON ANCORA SODDISFATTE")
+    else:
+        clear_alert("decollo_conferma")
 
 
 def send_command(campo: str, valore) -> bool:
@@ -542,21 +658,22 @@ def send_command(campo: str, valore) -> bool:
             print(f"[CMD] Errore invio: {e}")
             return False
 
+
 def read_from_serial():
     global _ser_instance
     while True:
         try:
             ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-            _ser_instance = ser                      
+            _ser_instance = ser
             T["serial_ok"] = True
             print(f"[SERIAL] Connesso a {SERIAL_PORT} @ {BAUD_RATE} baud.")
             while True:
-                with _serial_lock:                   
+                with _serial_lock:
                     raw = ser.readline()
                 if raw:
                     parse_telemetry(raw.decode('utf-8', errors='ignore').strip())
         except serial.SerialException as e:
-            _ser_instance = None                     
+            _ser_instance = None
             T["serial_ok"] = False
             print(f"[SERIAL] Porta non disponibile: {e} — nuovo tentativo in 3s")
             pygame.time.wait(3000)
@@ -615,7 +732,7 @@ def parse_tel1(line):
       14 : Velocità Pitot       [km/h]
       15 : Velocità GPS         [km/h]
       16 : Airspeed fusa        [km/h]  (usata dal PID/autothrottle)
-      17 : Groundspeed fusa     [km/h]  (NUOVO — usata dal controllore L1)
+      17 : Groundspeed fusa     [km/h]  (usata dal controllore L1)
       18 : Distanza target      [m]
       19 : Rotta verso target   [°]
       20 : Target roll (L1)     [°]
@@ -642,12 +759,8 @@ def parse_tel1(line):
       41 : Limite gas termico   [µs]
       42 : Altitudine LIDAR grezza [m]
       43 : Altitudine Baro grezza   [m]
-      44 : timestamp firmware (millis())   (NUOVO)
-      45 : numero progressivo pacchetto    (NUOVO)
-
-    NOTA: tutti gli indici dal 17 in poi erano disallineati di una posizione
-    nella versione precedente del parser (mancava il campo Groundspeed) —
-    corretto qui.
+      44 : timestamp firmware (millis())
+      45 : numero progressivo pacchetto
     """
     global T, _last_tel1_packet
     f = line.split(',')
@@ -686,7 +799,7 @@ def parse_tel1(line):
     T["spd_pitot"]  = float(f[14])
     T["spd_gps"]    = float(f[15])
     T["spd_fused"]  = float(f[16])   # Airspeed fusa (usata dal PID/autothrottle)
-    T["spd_ground"] = float(f[17])   # NUOVO: Groundspeed fusa (usata dal controllore L1)
+    T["spd_ground"] = float(f[17])   # Groundspeed fusa (usata dal controllore L1)
     T["spd_ms"]     = T["spd_fused"] / 3.6   # km/h → m/s per l'HUD (airspeed)
 
     T["dist_target"] = float(f[18])
@@ -729,7 +842,7 @@ def parse_tel1(line):
     T["alt_lidar_raw"] = float(f[42])
     T["alt_baro_raw"]  = float(f[43])
 
-    # ── NUOVO: timestamp firmware + contatore pacchetto (rilevamento perdite) ──
+    # ── timestamp firmware + contatore pacchetto (rilevamento perdite) ──
     T["fw_millis"] = int(f[44])
     pacchetto_num  = int(f[45])
     if _last_tel1_packet is not None and pacchetto_num > _last_tel1_packet:
@@ -739,9 +852,6 @@ def parse_tel1(line):
     _last_tel1_packet = pacchetto_num
     T["tel1_packet_num"] = pacchetto_num
 
-    HIST_BARO.append(T["alt_baro_raw"])
-    HIST_LIDAR.append(T["alt_lidar_raw"])
-    HIST_FUSA.append(T["altitude"])
 
 
 def parse_tel2(line):
@@ -849,48 +959,51 @@ def parse_tel4(line):
 
 
 def text(surf, s, pos, font, color, anchor="topleft"):
-
     img = font.render(s, True, color)
     surf.blit(img, img.get_rect(**{anchor: pos}))
 
+
 def draw_panel(surf, rect, title=""):
     BAR_H = 26
-    pygame.draw.rect(surf, C_PANEL,rect, border_radius=8)
+    pygame.draw.rect(surf, C_PANEL, rect, border_radius=8)
     pygame.draw.rect(surf, C_BORDER, rect, 2, border_radius=8)
     if title:
         bar = pygame.Rect(rect.x, rect.y, rect.w, BAR_H)
-        pygame.draw.rect(surf, C_BORDER, bar, 2,border_top_left_radius=8, border_top_right_radius=8)
+        pygame.draw.rect(surf, C_BORDER, bar, 2, border_top_left_radius=8, border_top_right_radius=8)
         text(surf, title, bar.center, F_TITLE, C_ACCENT, anchor="center")
 
-def draw_kv(surf, label, value, x, y, col_v=C_WHITE, col_k=C_DIM,):
+
+def draw_kv(surf, label, value, x, y, col_v=C_WHITE, col_k=C_DIM):
     text(surf, label, (x, y), F_LABEL, col_k)
     text(surf, value, (x + 110, y), F_VAL, col_v)
 
+
 def draw_vbar(surf, rect, value, vmin, vmax, color=C_GREEN):
-    pygame.draw.rect(surf, C_PANEL,  rect, border_radius=5)
+    pygame.draw.rect(surf, C_PANEL, rect, border_radius=5)
     pygame.draw.rect(surf, C_BORDER, rect, 2, border_radius=5)
     if vmax > vmin:
         pct = clamp((value - vmin) / (vmax - vmin), 0.0, 1.0)
         fill_h = int((rect.height - 6) * pct)
         if fill_h > 0:
             bar_col = C_RED if pct < 0.2 else color
-            fill    = pygame.Rect(rect.x + 3, rect.bottom - 3 - fill_h,rect.width - 6, fill_h)
+            fill = pygame.Rect(rect.x + 3, rect.bottom - 3 - fill_h, rect.width - 6, fill_h)
             pygame.draw.rect(surf, bar_col, fill, border_radius=3)
     text(surf, f"{value:.2f}", rect.center, F_SMALL, C_WHITE, anchor="center")
+
 
 def draw_servo_leds(surf, x, y, degrees, label, v_servo, error=False):
     LED_W, LED_H, LED_GAP, N = 40, 20, 5, 5
     delta = degrees - 90
-    leds  = [False] * N
+    leds = [False] * N
     leds[2] = True
-    if delta >  10: leds[3] = True
-    if delta >  25: leds[4] = True
+    if delta > 10: leds[3] = True
+    if delta > 25: leds[4] = True
     if delta < -10: leds[1] = True
     if delta < -25: leds[0] = True
 
     text(surf, label, (x + LED_W // 2, y - 18), F_SMALL, C_TEXT, anchor="center")
     for i in range(N):
-        y_led = y + (N - 1 - i) *(LED_H + LED_GAP)
+        y_led = y + (N - 1 - i) * (LED_H + LED_GAP)
         if error:
             col = C_RED
         elif leds[i]:
@@ -902,16 +1015,18 @@ def draw_servo_leds(surf, x, y, degrees, label, v_servo, error=False):
 
     y_info = y + N * (LED_H + LED_GAP) + 6
     text(surf, "ERR!" if error else f"{int(degrees)}°",
-         (x + LED_W // 2, y_info), F_SMALL,C_RED if error else C_WHITE, anchor="center")
+         (x + LED_W // 2, y_info), F_SMALL, C_RED if error else C_WHITE, anchor="center")
+
 
 def draw_hud_box(surf, rect, value, label="", unit=""):
     pygame.draw.rect(surf, (22, 28, 44), rect, border_radius=5)
-    pygame.draw.rect(surf, C_YELLOW,rect, 2,  border_radius=5)
+    pygame.draw.rect(surf, C_YELLOW, rect, 2, border_radius=5)
     if label:
-        text(surf, label, (rect.centerx,rect.top - 13), F_SMALL, C_DIM,  anchor="center")
+        text(surf, label, (rect.centerx, rect.top - 13), F_SMALL, C_DIM, anchor="center")
     text(surf, f"{value:.1f}", rect.center, F_VAL, C_YELLOW, anchor="center")
     if unit:
-        text(surf, unit,(rect.centerx, rect.bottom + 6), F_SMALL, C_DIM, anchor="center")
+        text(surf, unit, (rect.centerx, rect.bottom + 6), F_SMALL, C_DIM, anchor="center")
+
 
 def draw_horizon(surf, cx, cy, r, pitch_deg, roll_deg):
     diam = r * 2
@@ -931,13 +1046,13 @@ def draw_horizon(surf, cx, cy, r, pitch_deg, roll_deg):
     for p in [-20, -10, 10, 20]:
         py = split - int(p * ppd)
         if 4 < py < size - 4:
-            lw  = r // 4
+            lw = r // 4
             pygame.draw.line(bg, C_WHITE, (size // 2 - lw, py), (size // 2 + lw, py), 1)
             lbl = F_SMALL.render(f"{abs(p)}", True, C_WHITE)
-            bg.blit(lbl, (size // 2 + lw + 4,py - lbl.get_height() // 2))
+            bg.blit(lbl, (size // 2 + lw + 4, py - lbl.get_height() // 2))
             bg.blit(lbl, (size // 2 - lw - lbl.get_width() - 4, py - lbl.get_height() // 2))
 
-    rot  = pygame.transform.rotate(bg, -roll_deg)
+    rot = pygame.transform.rotate(bg, -roll_deg)
     rw, rh = rot.get_size()
     crop = pygame.Surface((diam, diam))
     crop.blit(rot, (0, 0), (rw // 2 - r, rh // 2 - r, diam, diam))
@@ -950,21 +1065,21 @@ def draw_horizon(surf, cx, cy, r, pitch_deg, roll_deg):
     pygame.draw.circle(surf, C_BORDER, (cx, cy), r, 2)
     hw = r // 2
     pygame.draw.line(surf, C_CROSS, (cx - hw, cy), (cx - r // 6, cy), 3)
-    pygame.draw.line(surf, C_CROSS, (cx + r // 6, cy), (cx + hw,cy), 3)
+    pygame.draw.line(surf, C_CROSS, (cx + r // 6, cy), (cx + hw, cy), 3)
     pygame.draw.circle(surf, C_CROSS, (cx, cy), 4)
+
 
 def draw_header(surf, t):
     """Barra superiore: satelliti, modalità, yaw."""
-
-    text(surf, t["mode"],(W // 2, 12),   F_HEAD, C_WHITE,anchor="midtop")
+    text(surf, t["mode"], (W // 2, 12), F_HEAD, C_WHITE, anchor="midtop")
     if t["in_flight"]:
-        text(surf, f"IN FLIGHT",(W - 28, 12), F_HEAD, C_ACCENT, anchor="topright")
+        text(surf, "IN FLIGHT", (W - 28, 12), F_HEAD, C_ACCENT, anchor="topright")
     elif t["alarm_failsafe"]:
-        text(surf, f"FAILSAFE!",(W - 28, 12), F_HEAD, C_RED,anchor="topright")
+        text(surf, "FAILSAFE!", (W - 28, 12), F_HEAD, C_RED, anchor="topright")
     elif t["alarm_crash"]:
-        text(surf, f"CRASH!", (W - 28, 12),F_HEAD, C_RED,anchor="topright")
+        text(surf, "CRASH!", (W - 28, 12), F_HEAD, C_RED, anchor="topright")
     else:
-        text(surf,f"ON GROUND",(W - 28, 12), F_HEAD, C_DIM,anchor="topright")
+        text(surf, "ON GROUND", (W - 28, 12), F_HEAD, C_DIM, anchor="topright")
 
     # Indicatore connessione seriale
     serial_col = C_GREEN if t["serial_ok"] else C_RED
@@ -981,8 +1096,8 @@ def draw_power_panel(surf, t):
     text(surf, "THR", (thr.centerx, thr.bottom + 14), F_SMALL, C_DIM, anchor="center")
 
     title = "RC CONTROLLER" if t["mode"] == "MANUALE" else "PID CONTROLLER"
-    kx    = POWER_PANEL.x + 175
-    ky    = POWER_PANEL.y + 40
+    kx = POWER_PANEL.x + 175
+    ky = POWER_PANEL.y + 40
     text(surf, title, (kx, ky), F_TITLE, C_ACCENT)
     ky += 22
     if t["mode"] == "MANUALE":
@@ -1005,31 +1120,29 @@ def draw_temp_panel(surf, t):
     kx = TEMP_PANEL.x + 20
     ky = TEMP_PANEL.y + 42
     draw_kv(surf, "TEENSY", f"{t['t_teensy']:.1f} °C", kx, ky,
-            col_v=(C_WHITE  if t["t_teensy"] < T_TEENSY_WARN
+            col_v=(C_WHITE if t["t_teensy"] < T_TEENSY_WARN
                    else C_YELLOW if t["t_teensy"] < T_TEENSY_CRIT
                    else C_RED))
     draw_kv(surf, "MOTORE", f"{t['t_motor']:.1f} °C", kx, ky + 34,
-            col_v=(C_WHITE  if t["t_motor"] < T_MOTOR_WARN
+            col_v=(C_WHITE if t["t_motor"] < T_MOTOR_WARN
                    else C_YELLOW if t["t_motor"] < T_MOTOR_CRIT
                    else C_RED))
 
 
 def draw_speed_panel(surf, t):
-    """Pannello SPEED — ora con 4 velocità: Pitot/GPS grezze + Airspeed/Groundspeed fuse."""
     draw_panel(surf, SPEED_PANEL, "SPEED")
     entries = [("PITOT", t["spd_pitot"],  "km/h"),
-               ("GPS",   t["spd_gps"],    "km/h"),
-               ("AIR",   t["spd_fused"],  "km/h"),   # airspeed fusa, usata dal PID
-               ("GND",   t["spd_ground"], "km/h")]   # NUOVO: groundspeed fusa, usata dal L1
+               ("GPS",   t["spd_gps"],    "km/h"),]
     bw, bh, gap = 78, 120, 8
     bx = SPEED_PANEL.x + 14
     by = SPEED_PANEL.y + 50
     for label, val, unit in entries:
         r = pygame.Rect(bx, by, bw, bh)
         draw_vbar(surf, r, val, 0, 100, C_GREEN)
-        text(surf, label, (r.centerx, r.top - 14), F_SMALL, C_DIM,  anchor="center")
-        text(surf, unit,  (r.centerx, r.bottom + 6), F_SMALL, C_DIM, anchor="center")
+        text(surf, label, (r.centerx, r.top - 14), F_SMALL, C_DIM, anchor="center")
+        text(surf, unit, (r.centerx, r.bottom + 6), F_SMALL, C_DIM, anchor="center")
         bx += bw + gap
+
 
 def servo_ok(v):
     return SERVO_V_MIN < v < SERVO_V_MAX
@@ -1037,47 +1150,51 @@ def servo_ok(v):
 
 def draw_servi_panel(surf, t):
     draw_panel(surf, SERVI_PANEL, "SERVI")
-    servos = [(t["deg_isx"], "Int SX", t["v_isx"]),(t["deg_idx"], "Int DX", t["v_idx"]),(t["deg_esx"], "Est SX", t["v_esx"]),(t["deg_edx"], "Est DX", t["v_edx"])]
-
+    servos = [(t["deg_isx"], "Int SX", t["v_isx"]), (t["deg_idx"], "Int DX", t["v_idx"]),
+              (t["deg_esx"], "Est SX", t["v_esx"]), (t["deg_edx"], "Est DX", t["v_edx"])]
     for i, (deg, lbl, v) in enumerate(servos):
-        draw_servo_leds(surf, SERVI_X + i * SERVI_GAP, SERVI_Y,deg, lbl, v, error=not servo_ok(v))
+        draw_servo_leds(surf, SERVI_X + i * SERVI_GAP, SERVI_Y, deg, lbl, v, error=not servo_ok(v))
+
 
 def draw_vserv_panel(surf, t):
     draw_panel(surf, VSERV_PANEL, "TENSIONE SERVI")
     labels = ["Int SX", "Int DX", "Est SX", "Est DX"]
-    vals   = [t["v_isx"], t["v_idx"], t["v_esx"], t["v_edx"]]
+    vals = [t["v_isx"], t["v_idx"], t["v_esx"], t["v_edx"]]
     bw, bh, gap = 72, 120, 16
     bx = VSERV_PANEL.x + 20
     by = VSERV_PANEL.y + 55
     for label, val in zip(labels, vals):
-        ok  = servo_ok(val)
+        ok = servo_ok(val)
         col = C_GREEN if ok else C_RED
-        r   = pygame.Rect(bx, by, bw, bh)
+        r = pygame.Rect(bx, by, bw, bh)
         draw_vbar(surf, r, val, SERVO_V_MIN - 0.5, SERVO_V_MAX + 0.5, col)
         text(surf, label, (r.centerx, r.top - 14), F_SMALL, C_DIM, anchor="center")
         bx += bw + gap
 
+
 def draw_pfd_center(surf, t):
     draw_horizon(surf, PFD_CX, PFD_CY, PFD_R, t["pitch"], t["roll"])
-    draw_hud_box(surf, SPD_BOX, t["spd_ms"],   "SPEED", "m/s")
-    draw_hud_box(surf, ALT_BOX, t["altitude"], "ALT",   "m")
+    draw_hud_box(surf, SPD_BOX, t["spd_ms"], "SPEED", "m/s")
+    draw_hud_box(surf, ALT_BOX, t["altitude"], "ALT", "m")
     text(surf, f"TARGET  {t['dist_target']:.0f} m",
          (PFD_CX, PFD_CY + PFD_R + 26), F_LABEL, C_DIM, anchor="midtop")
-    
-def navigation_info_pannel(surf, t):
+
+
+def draw_nav_panel(surf, t):
     draw_panel(surf, NAV_PANEL, "NAV INFO")
     kx = NAV_PANEL.x + 20
     ky = NAV_PANEL.y + 40
-    draw_kv(surf, "DIST TGT",   f"{t['dist_target']:.1f} m", kx, ky,
+    draw_kv(surf, "DIST TGT", f"{t['dist_target']:.1f} m", kx, ky,
             col_v=C_WHITE if t["dist_target"] >= DIST_TGT_WARN else C_YELLOW)
-    draw_kv(surf, "HDG TGT",    f"{t['hdg_target']:.1f}°",   kx, ky + 34)
-    draw_kv(surf, "ROLL TGT",   f"{t['roll_target']:.1f}°",  kx, ky + 68)
-    draw_kv(surf, "SATELLITES", f"{t['satellites']}",         kx + 215, ky,
+    draw_kv(surf, "HDG TGT", f"{t['hdg_target']:.1f}°", kx, ky + 34)
+    draw_kv(surf, "ROLL TGT", f"{t['roll_target']:.1f}°", kx, ky + 68)
+    draw_kv(surf, "SATELLITES", f"{t['satellites']}", kx + 215, ky,
             col_v=C_WHITE if t["satellites"] >= SAT_MIN else C_RED)
-    draw_kv(surf, "LAT",        f"{t['lat']:.6f}",            kx + 215, ky + 34)
-    draw_kv(surf, "LON",        f"{t['lon']:.6f}",            kx + 215, ky + 68)
+    draw_kv(surf, "LAT", f"{t['lat']:.6f}", kx + 215, ky + 34)
+    draw_kv(surf, "LON", f"{t['lon']:.6f}", kx + 215, ky + 68)
 
-def battery_pannel(surf, t):
+
+def draw_battery_panel(surf, t):
     draw_panel(surf, BATTERY_PANNEL, "BATTERY")
     C_VUOTO = (18, 26, 42)
     kx = BATTERY_PANNEL.x + 40
@@ -1096,20 +1213,20 @@ def battery_pannel(surf, t):
     text(surf, "V MOT", (V_m.centerx, V_m.bottom + 14), F_SMALL, C_DIM, anchor="center")
 
     rele_on = t["relay"]
-    pipe_h  = 14
-    pipe_y  = ky + bar_h // 2 - pipe_h // 2
+    pipe_h = 14
+    pipe_y = ky + bar_h // 2 - pipe_h // 2
     pipe_x1 = V_t.right
-    pygame.draw.rect(surf, C_BORDER, (pipe_x1, pipe_y,   gap, pipe_h))
-    pygame.draw.rect(surf, C_VUOTO,  (pipe_x1, pipe_y+2, gap, pipe_h-4))
+    pygame.draw.rect(surf, C_BORDER, (pipe_x1, pipe_y, gap, pipe_h))
+    pygame.draw.rect(surf, C_VUOTO, (pipe_x1, pipe_y + 2, gap, pipe_h - 4))
     if rele_on:
-        pygame.draw.rect(surf, C_GREEN, (pipe_x1, pipe_y+2, gap, pipe_h-4))
+        pygame.draw.rect(surf, C_GREEN, (pipe_x1, pipe_y + 2, gap, pipe_h - 4))
 
     vw, vh = 32, 32
     vx = pipe_x1 + gap // 2 - vw // 2
     vy = ky + bar_h // 2 - vh // 2
     valve_color = C_GREEN if rele_on else C_RED
     pygame.draw.rect(surf, (14, 20, 32), (vx, vy, vw, vh), border_radius=4)
-    pygame.draw.rect(surf, valve_color,  (vx, vy, vw, vh), 2, border_radius=4)
+    pygame.draw.rect(surf, valve_color, (vx, vy, vw, vh), 2, border_radius=4)
     if rele_on:
         pygame.draw.rect(surf, C_GREEN, (vx + 4, vy + vh // 2 - 4, vw - 8, 8))
         lbl_txt = "FAILOVER ON"
@@ -1118,21 +1235,22 @@ def battery_pannel(surf, t):
         lbl_txt = "ISOLATI"
     text(surf, lbl_txt, (vx + vw // 2, vy - 12), F_SMALL, valve_color, anchor="center")
 
-def posizione(surf, t):
+
+def draw_orientation_panel(surf, t):
     draw_panel(surf, ORIENTATION_PANEL, "ORIENTAZIONE")
     kx = ORIENTATION_PANEL.x + 20
     ky = ORIENTATION_PANEL.y + 40
-    draw_kv(surf, "ROLL",      f"{t['roll']:.1f}°",      kx, ky,
-            col_v=(C_WHITE  if abs(t["roll"])  < ROLL_WARN
-                   else C_YELLOW if abs(t["roll"])  < ROLL_CRIT
+    draw_kv(surf, "ROLL", f"{t['roll']:.1f}°", kx, ky,
+            col_v=(C_WHITE if abs(t["roll"]) < ROLL_WARN
+                   else C_YELLOW if abs(t["roll"]) < ROLL_CRIT
                    else C_RED))
-    draw_kv(surf, "PITCH",     f"{t['pitch']:.1f}°",     kx, ky + 34,
-            col_v=(C_WHITE  if abs(t["pitch"]) < PITCH_WARN
+    draw_kv(surf, "PITCH", f"{t['pitch']:.1f}°", kx, ky + 34,
+            col_v=(C_WHITE if abs(t["pitch"]) < PITCH_WARN
                    else C_YELLOW if abs(t["pitch"]) < PITCH_CRIT
                    else C_RED))
-    draw_kv(surf, "YAW",       f"{t['yaw']:.1f}°",       kx + 215, ky)
-    draw_kv(surf, "AIRSPD",    f"{t['spd_fused']:.1f} km/h", kx + 215, ky + 34,
-            col_v=(C_WHITE  if t["spd_fused"] < SPD_WARN
+    draw_kv(surf, "YAW", f"{t['yaw']:.1f}°", kx + 215, ky)
+    draw_kv(surf, "AIRSPD", f"{t['spd_fused']:.1f} km/h", kx + 215, ky + 34,
+            col_v=(C_WHITE if t["spd_fused"] < SPD_WARN
                    else C_YELLOW if t["spd_fused"] < SPD_CRIT
                    else C_RED))
 
@@ -1143,8 +1261,7 @@ def draw_led_indicator(surf, x, y, label, ok):
     pygame.draw.rect(surf, col, (x, y, 18, 18), border_radius=3)
     pygame.draw.rect(surf, C_BORDER, (x, y, 18, 18), 1, border_radius=3)
     text(surf, label, (x + 26, y + 9), F_LABEL, C_TEXT, anchor="midleft")
-    text(surf, "OK" if ok else "FAIL", (x + 26 + 130, y + 9), F_VAL,
-         col, anchor="midleft")
+    text(surf, "OK" if ok else "FAIL", (x + 26 + 130, y + 9), F_VAL, col, anchor="midleft")
 
 
 def draw_diag_panel(surf, t):
@@ -1153,23 +1270,24 @@ def draw_diag_panel(surf, t):
     kx = DIAG_PANEL.x + 24
     ky = DIAG_PANEL.y + 42
 
-    draw_led_indicator(surf, kx, ky,             "FLUSSO OTTICO", t["sensor_optflow_ok"])
-    draw_led_indicator(surf, kx+225, ky ,        "LIDAR",         t["sensor_lidar_ok"])
-    draw_led_indicator(surf, kx+450, ky ,        "PACCHETTO RC",  not t["sensor_packet_lost"])
+    draw_led_indicator(surf, kx, ky, "FLUSSO OTTICO", t["sensor_optflow_ok"])
+    draw_led_indicator(surf, kx + 225, ky, "LIDAR", t["sensor_lidar_ok"])
+    draw_led_indicator(surf, kx + 450, ky, "PACCHETTO RC", not t["sensor_packet_lost"])
 
-    kx2 = kx
     err = abs(t["heading_error"])
     col_err = (C_WHITE if err < HDG_ERR_WARN
                else C_YELLOW if err < HDG_ERR_CRIT
                else C_RED)
-    draw_kv(surf, "ERR ROTTA", f"{t['heading_error']:.1f}°", kx2, ky+30, col_v=col_err)
+    draw_kv(surf, "ERR ROTTA", f"{t['heading_error']:.1f}°", kx, ky + 30, col_v=col_err)
 
     limitato = t["thermal_limit"] < GAS_MASSIMO
-    draw_kv(surf, "LIM TERMICO", f"{t['thermal_limit']} µs", kx2+225, ky + 30,
+    draw_kv(surf, "LIM TERMICO", f"{t['thermal_limit']} µs", kx + 225, ky + 30,
             col_v=C_YELLOW if limitato else C_WHITE)
 
-    draw_kv(surf, "OPT VX", f"{t['opt_vx']:.2f} m/s", kx2+450, ky +30)
-    draw_kv(surf, "OPT VY", f"{t['opt_vy']:.2f} m/s", kx2+675, ky +30)
+    draw_kv(surf, "OPT VX", f"{t['opt_vx']:.2f} m/s", kx + 450, ky + 30)
+    draw_kv(surf, "OPT VY", f"{t['opt_vy']:.2f} m/s", kx + 675, ky + 30)
+
+
 
 
 def draw_alert_banner(surf, t):
@@ -1190,7 +1308,7 @@ def draw_alert_banner(surf, t):
         pygame.draw.rect(surf, C_GREEN, rect, 2, border_radius=8)
         text(surf, "🟢  TUTTI I SISTEMI NOMINALI", rect.center, F_VAL, C_GREEN, anchor="center")
     else:
-        col   = LIVELLI[principale["livello"]]["colore"]
+        col = LIVELLI[principale["livello"]]["colore"]
         icona = LIVELLI[principale["livello"]]["icona"]
         pygame.draw.rect(surf, col, rect, 3, border_radius=8)
         text(surf, f"{icona} {principale['titolo']}", (rect.x + 16, rect.y + 9), F_HEAD, col)
@@ -1230,7 +1348,7 @@ def draw_diagnostics_overlay(surf):
     if not items:
         text(surf, "🟢 Nessun allarme attivo — tutti i sistemi nominali.", (contenuto.x + 14, y), F_VAL, C_GREEN)
     for codice, a in items:
-        col   = LIVELLI[a["livello"]]["colore"]
+        col = LIVELLI[a["livello"]]["colore"]
         icona = LIVELLI[a["livello"]]["icona"]
         text(surf, f"{icona} [{a['ts']}] {a['titolo']}", (contenuto.x + 14, y), F_VAL, col)
         riga = []
@@ -1289,7 +1407,7 @@ def draw_perche_manuale_overlay(surf, t):
 
 def draw_extended_overlay(surf):
     """
-    NUOVO — Schermata "TELEMETRIA ESTESA": mostra tutti i dati diagnostici dei
+    Schermata "TELEMETRIA ESTESA": mostra tutti i dati diagnostici dei
     pacchetti TEL2/TEL3/TEL4 che non compaiono nella PFD principale
     (correnti/potenze, diagnostica PID completa, GPS/baro/pitot/IMU estesi,
     RC 4-16, contatori pacchetto). Aggiornati in round-robin ogni ~2s.
@@ -1409,7 +1527,9 @@ def riproduci_audio(nome_file: str) -> bool:
         print(f"[AUDIO] Errore {nome_file}: {e}")
         return False
 
+
 _w_timers: dict = {}
+
 
 def warning(nome: str, cooldown_ms: int = 3000) -> bool:
     ora = pygame.time.get_ticks()
@@ -1419,65 +1539,57 @@ def warning(nome: str, cooldown_ms: int = 3000) -> bool:
             return True
     return False
 
-# ── Stato interno warning 
-_w_alt_prec:  float  = 0.0
-_w_t_prec_ms: int    = 0
-_w_callouts:  set    = set()
+
+# ── Stato interno warning ─────────────────────────────────────
+_w_alt_prec: float = 0.0
+_w_t_prec_ms: int = 0
+_w_callouts: set = set()
 _w_mode_prec: object = None
+
 
 def aggiorna_warning(t: dict) -> None:
     global _w_alt_prec, _w_t_prec_ms, _w_callouts, _w_mode_prec
 
-    # ── Delta-tempo reale 
-    ora_ms       = pygame.time.get_ticks()
-    dt_ms        = max(ora_ms - _w_t_prec_ms, 1) if _w_t_prec_ms else 33
+    # ── Delta-tempo reale ──
+    ora_ms = pygame.time.get_ticks()
+    dt_ms = max(ora_ms - _w_t_prec_ms, 1) if _w_t_prec_ms else 33
     _w_t_prec_ms = ora_ms
-    dt_s         = dt_ms / 1000.0
+    dt_s = dt_ms / 1000.0
 
-    alt     = t["altitude"]
-    spd     = t["spd_fused"]
-    roll    = abs(t["roll"])
+    alt = t["altitude"]
+    spd = t["spd_fused"]
+    roll = abs(t["roll"])
     in_volo = t["in_flight"]
-    mode    = t["mode"]
+    mode = t["mode"]
 
-    # ── Velocità di discesa
+    # ── Velocità di discesa ──
     if in_volo:
-        v_discesa   = (alt - _w_alt_prec) / dt_s   
+        v_discesa = (alt - _w_alt_prec) / dt_s
         _w_alt_prec = alt
     else:
-        v_discesa   = 0.0
+        v_discesa = 0.0
         _w_alt_prec = alt
-
 
     if alt > ALT_RESET_CALLOUT or not in_volo:
         _w_callouts.clear()
 
     if in_volo:
-
         if alt < ALT_PULL_UP and v_discesa <= VDISCESA_PULL_UP:
             warning("pull_up.wav", cooldown_ms=CD_PULL_UP)
-
-    
         elif alt < ALT_TERRAIN_PU and v_discesa <= VDISCESA_TERRAIN_PU:
             warning("tarrain_terrain_pull_up.wav", cooldown_ms=CD_TERRAIN_PULL_UP)
-
-    
         elif alt < ALT_TERRAIN and v_discesa <= VDISCESA_TERRAIN:
             warning("terrain.wav", cooldown_ms=CD_TERRAIN)
 
-        
         if v_discesa <= VDISCESA_SINK_RATE:
             warning("sink_rate.wav", cooldown_ms=CD_SINK_RATE)
 
-        
         if alt < ALT_DONT_SINK and v_discesa <= VDISCESA_DONT_SINK:
             warning("dont sink.wav", cooldown_ms=CD_DONT_SINK)
 
-    
         if roll >= ROLL_CRIT:
             warning("bank_angle.wav", cooldown_ms=CD_BANK_ANGLE)
 
-        
         if spd < SPD_STALL:
             warning("stall.wav", cooldown_ms=CD_STALL)
         elif spd < SPD_AIR_LOW:
@@ -1485,23 +1597,22 @@ def aggiorna_warning(t: dict) -> None:
         elif spd < SPD_SLOW:
             warning("fligh slow.wav", cooldown_ms=CD_FLIGHT_SLOW)
 
-    
         if spd >= SPD_CRIT:
             warning("overspeed.wav", cooldown_ms=CD_OVERSPEED)
 
-        #Callout quota 
+        # Callout quota
         if v_discesa <= VDISCESA_CALLOUT:
             if "40" not in _w_callouts and CALLOUT_40_LO < alt < CALLOUT_40_HI:
-                _w_callouts.add("40");  riproduci_audio("40.wav")
+                _w_callouts.add("40"); riproduci_audio("40.wav")
             elif "30" not in _w_callouts and CALLOUT_30_LO < alt < CALLOUT_30_HI:
-                _w_callouts.add("30");  riproduci_audio("30.wav")
+                _w_callouts.add("30"); riproduci_audio("30.wav")
             elif "20" not in _w_callouts and CALLOUT_20_LO < alt < CALLOUT_20_HI:
-                _w_callouts.add("20");  riproduci_audio("20.wav")
+                _w_callouts.add("20"); riproduci_audio("20.wav")
             elif "10" not in _w_callouts and CALLOUT_10_LO < alt < CALLOUT_10_HI:
-                _w_callouts.add("10");  riproduci_audio("10.wav")
+                _w_callouts.add("10"); riproduci_audio("10.wav")
 
     if _w_mode_prec is None:
-        _w_mode_prec = mode                    
+        _w_mode_prec = mode
     elif mode != _w_mode_prec:
         if mode in ("MANUALE", "AUTO PID"):
             riproduci_audio("autopilot.wav")
@@ -1531,6 +1642,7 @@ def aggiorna_warning(t: dict) -> None:
     if not (t["ok_isx"] and t["ok_idx"] and t["ok_esx"] and t["ok_edx"]):
         warning("errore.wav", cooldown_ms=CD_ERRORE)
 
+
 def terminal_cli_thread():
     help_text = """
     =========================================================
@@ -1538,21 +1650,21 @@ def terminal_cli_thread():
     =========================================================
     -- SERVI (Valori 45-135) --
     SERVO_ISX / SERVO_IDX / SERVO_ESX / SERVO_EDX : <angolo>
-    
+
     -- STATO SERVI (Nessun valore necessario) --
     SERVO_ISX_ATTACH / SERVO_ISX_DETACH (ecc. per gli altri)
-    
+
     -- CONTROLLI --
     RELE_ON / RELE_OFF
     MODO : <1 (Manuale) o 2 (Auto)>
     GAS  : <1000 - 2000>
-    
+
     -- SICUREZZE --
     SICUREZZA_SCHIANTO_ON / OFF
     SICUREZZA_ALIMENTAZIONE_ON / OFF
     SICUREZZA_SERVI_ON / OFF
     SICUREZZA_TEMP_ON / OFF
-    
+
     -- NAVIGAZIONE --
     SET_LATITUDE  : <float>
     SET_LONGITUDE : <float>
@@ -1561,10 +1673,9 @@ def terminal_cli_thread():
     Digita 'HELP' per rivedere questa lista.
     """
     print(help_text)
-    
+
     while True:
         try:
-            # Rimane in attesa dell'input dell'utente sul terminale
             raw_input = input()
             if not raw_input.strip():
                 continue
@@ -1576,24 +1687,26 @@ def terminal_cli_thread():
             # Pulizia e normalizzazione dell'input:
             # "cMd   :   SET_ALTITUDE  : 200 " -> ["CMD", "SET_ALTITUDE", "200"]
             parts = [p.strip().upper() for p in raw_input.split(':')]
-            
+
             if parts[0] == "CMD":
                 campo = parts[1] if len(parts) > 1 else ""
-                
+
                 # Se l'utente non inserisce un valore (es. "CMD:RELE_ON"),
-                # passiamo "0" di default per non far fallire l'indexOf(':', 4) sul Teensy
+                # passiamo "0" di default per non far fallire il parsing sul Teensy
                 valore = parts[2] if len(parts) > 2 and parts[2] != "" else "0"
-                
+
                 if campo:
                     send_command(campo, valore)
             else:
                 print("[CLI] Formato errato. Usa CMD:CAMPO:VALORE (es. CMD:SET_ALTITUDE:200)")
-                
+
         except Exception as e:
             print(f"[CLI] Errore di input: {e}")
 
+
 def main():
-    global _overlay_diagnostica, _overlay_log, _overlay_perche, _overlay_extended, _scroll_diag, _scroll_log, _scroll_ext
+    global _overlay_diagnostica, _overlay_log, _overlay_perche, _overlay_extended
+    global _scroll_diag, _scroll_log, _scroll_ext
 
     thread_seriale = threading.Thread(target=read_from_serial, daemon=True)
     thread_seriale.start()
@@ -1628,12 +1741,12 @@ def main():
                     _overlay_diagnostica = _overlay_log = _overlay_perche = _overlay_extended = False
                 elif event.key == pygame.K_UP:
                     _scroll_diag = max(0, _scroll_diag - 84)
-                    _scroll_log  = max(0, _scroll_log - 48)
-                    _scroll_ext  = max(0, _scroll_ext - 84)
+                    _scroll_log = max(0, _scroll_log - 48)
+                    _scroll_ext = max(0, _scroll_ext - 84)
                 elif event.key == pygame.K_DOWN:
                     _scroll_diag += 84
-                    _scroll_log  += 48
-                    _scroll_ext  += 84
+                    _scroll_log += 48
+                    _scroll_ext += 84
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if _rect_banner.collidepoint(event.pos):
@@ -1653,11 +1766,10 @@ def main():
         draw_servi_panel(screen, T)
         draw_vserv_panel(screen, T)
         draw_pfd_center(screen, T)
-        navigation_info_pannel(screen, T)
-        posizione(screen, T)
-        battery_pannel(screen, T)
+        draw_nav_panel(screen, T)
+        draw_orientation_panel(screen, T)
+        draw_battery_panel(screen, T)
         draw_diag_panel(screen, T)
-
 
         # ── Overlay (finestre di dettaglio): disegnati per ultimi, sopra a tutto ──
         if _overlay_diagnostica:
@@ -1671,6 +1783,7 @@ def main():
 
         pygame.display.flip()
         clock.tick(30)
+
 
 if __name__ == "__main__":
     main()
