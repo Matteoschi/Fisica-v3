@@ -9,10 +9,12 @@
 #include <Adafruit_BMP3XX.h>
 #include <Bitcraze_PMW3901.h>
 #include <math.h>
+#include "config.h"
 
 //  SENSORI
 TinyGPSPlus gps;
 Adafruit_BNO055  giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
+const int   IMU_CAMPIONI_TARA = 200; 
 Adafruit_BMP3XX barometro;
 Bitcraze_PMW3901 flusso_ottico(25);
 
@@ -32,7 +34,7 @@ unsigned long timerTelemetria = 0;
 unsigned long timerTelemetriaDiag = 0;
 unsigned long numeroPacchettoTEL1 = 0;
 uint8_t contatorePacchettoDiag = 0;   // cicla 0..2 tra TEL2 / TEL3 / TEL4
-bool forzaInvioDiagnostica = false;   
+
 
 //  RICEVENTE SBUS (FrSky)
 SBUS   ricevente(Serial7);
@@ -62,7 +64,8 @@ Servo servoInternoSX;  // (pitch)
 Servo servoInternoDX;  // (pitch)
 Servo servoEsternoSX;  // (pitch + roll)
 Servo servoEsternoDX;  // (pitch + roll)
-Servo motore;          
+Servo motore;       
+const int CENTRO_SERVO  = 90;     
 
 //  SENSORE CORRENTE --------------------------------------------------------------
 Adafruit_INA219 sensoreMotore(0x40); 
@@ -81,47 +84,22 @@ float G_correnteEstDX = 0.0f;
 
 const float R_SPECIFIC = 287.05f;
 
-const float VALORE_BATT_MOTORE_BASSA_V = 13.5f;  
-const float VALORE_BATT_TEENSY_BASSA_V = 4.9f;   
-
-const int SOGLIA_G_SCHIANTO=50;          
 const int SEMPLE_VALORI_SCHIANTO=3;      
 
-const int CENTRO_SERVO  = 90;   
-const int MAX_ROLL_g = 35;       
-const int MAX_PITCH_g  = 20;      
-
-
-float ALTEZZA_MAX_m = 120;   
-float ALTEZZA_MIN_m = 10;    
-
-const int GAS_NEUTRO = 1000;     
-const int GAS_MASSIMO = 2000;   
-const int GAS_MINIMO = 1200;     
+const int GAS_AVVICINAMENTO = 1250;  
 const int GAS_CROCIERA= 1450;   
 
-const float MAX_AIRSPEED_X8_km = 45.0f;         
-float VELOCITA_CROCIERA_km  = 60.0;             
+float VELOCITA_CROCIERA_km  = 60.0;     
+
 float VELOCITA_AVVICINAMENTO_km= 45.0;  
-const float GAS_AVVICINAMENTO = 1250;       
-const float DISTANZA_FRENATA_m = 150.0;        
-float RAGGIO_ACCETTAZIONE_MINIMO_m = 25.0f;     
-
-const int   IMU_CAMPIONI_TARA = 200;    
-
-const float T_MOTORE_THROTTLE_START = 70.0f;   
-float T_MOTORE_THROTTLE_END  = 90.0f;         
-
+    
 int G_limiteGasTermico = GAS_MASSIMO;     
 int  G_comandoGasPreLimite = GAS_NEUTRO;  
-bool G_limitazioneTermicaAttiva = false;  // true se in questo ciclo il limite termico ha effettivamente tagliato il gas
+
+const float MARGINE = 5.0f;
+
 
 const float ALPHA_LIDAR = 0.25f;               // Coefficiente del filtro passa-basso (EMA) sul LIDAR, adimensionale (0-1, più alto = più reattivo/meno filtrato)
-const float ALTEZZA_MAX_LIDAR_m = 6.0f;          
-const float ALTEZZA_MAX_SENSORE_OTTICO_m = 4.0f; 
-const float PITCH_DOWN_FORZATO = -8.0f;
-const float PITCH_UP_FORZATO = 12.0f;
-
 const float COSTANTE_OTTICA = 0.0012; 
 
 //  NAVIGAZIONE ------------------------------------------------------------------
@@ -207,8 +185,6 @@ float G_targetVelocitaAttuale_km = 0.0f;
 
 
 const unsigned long TEMPO_DECOLLO_SICURO_MS = 1500;  
-const float SOGLIA_VELO_DECOLLO_MS = 5.0;           
-const float SOGLIA_ALT_DECOLLO_M = 5.0;             
 unsigned long timestampDecollo = 0;                  
 static int contatoreImpatto = 0;                     
 
@@ -228,28 +204,31 @@ bool Voltaggio       = true;
 int  tentativi       = 0;       
 const int MAX_TENTATIVI = 3;   
 
-bool servo_sicurezza         = true;   // Abilita/disabilita la diagnostica di sicurezza sui servi (via comando da terra)
 bool alimentazione_sicurezza = true;   // Abilita/disabilita il controllo di sicurezza sulle batterie
-bool schianto_sicurezza      = true;   // Abilita/disabilita il rilevamento schianto
-
-bool statoSchiantoRilevato   = false;   
-bool droneInVolo             = false;   
-bool schiantoBloccato        = false;   
-
 bool batteriaBassa_motore    = false;   
 bool batteriaBassa_teensy    = false;   
 bool relèAttivato            = false;  
 
+bool schianto_sicurezza      = true;   // Abilita/disabilita il rilevamento schianto
+bool statoSchiantoRilevato   = false;   
+bool schiantoBloccato        = false;   
+bool droneInVolo             = false;   
+
+int  global_modalitaVolo       = 1;      // Modalità di volo corrente: 1=Manuale, 2=Auto, (3=Failsafe gestito a parte, non scritto qui)
+
+bool servo_sicurezza         = true;   // Abilita/disabilita la diagnostica di sicurezza sui servi (via comando da terra)
+bool statoPrecedenteInterni    = true;   
+bool statoPrecedenteEsterni    = true;  
+
 bool estSX_Ok = true,    
 estDX_Ok = true;          
 bool intSX_Ok = true,    
-intDX_Ok = true;          
-int  global_modalitaVolo       = 1;      // Modalità di volo corrente: 1=Manuale, 2=Auto, (3=Failsafe gestito a parte, non scritto qui)
-bool statoPrecedenteInterni    = true;   
-bool statoPrecedenteEsterni    = true;   
+intDX_Ok = true;     
 
+bool G_limitazioneTermicaAttiva = false;  // true se in questo ciclo il limite termico ha effettivamente tagliato il gas
 bool sistema_sicurezza_temp = true;   // Abilita/disabilita la limitazione termica del gas
 
+bool forzaInvioDiagnostica = false;   
 //  PROTOTIPI -------------------------------------------------------------------
 
 void applicaMixer4Servi(int pitch, int roll);
@@ -820,9 +799,11 @@ void loop()
 }
 
 void aggiorna_densita_aria(float pressione_pa, float temperatura_c) {
-    float temperaturaK = temperatura_c + 273.15f;
-    if (temperaturaK > 0.0f && pressione_pa > 0.0f) {
-        desità_aria_aggiornata = pressione_pa / (R_SPECIFIC * temperaturaK);
+    float temperatura_K = temperatura_c + 273.15f;
+    if (temperatura_K > 0.0f && pressione_pa > 0.0f) {
+        desità_aria_aggiornata = pressione_pa / (R_SPECIFIC * (temperatura_K));
+    }else {
+        desità_aria_aggiornata = 1.225f;   
     }
 }
 
@@ -958,21 +939,22 @@ void aggiornaNavigazione(float angoloYaw_g)
 }
 
 //  DIAGNOSTICA SERVI ----------------------------------------------------------------
-// Legge la corrente di ciascun servo (mA) e dichiara un servo "guasto" dopo 5 letture anomale consecutive
+// Legge la corrente di ciascun servo (mA) e dichiara un servo "guasto" dopo 20 letture anomale consecutive
 void diagnosticaServi(){
     if (!servo_sicurezza) {
         estSX_Ok = estDX_Ok = intSX_Ok = intDX_Ok = true;  
         return;
     }
+
     static int consecutiveErrors[4] = {0, 0, 0, 0};   // Conteggio errori consecutivi per [EstSX, EstDX, IntSX, IntDX]
     float mA = 0.0f;
 
     // Servo Esterno SX: anomalia se corrente < 0.5 mA (quasi nulla, scollegato) o > 2500 mA (stallo/cortocircuito)
     mA = sensoreEstSX.getCurrent_mA();   
     G_correnteEstSX = mA;
-    if (mA < 0.5f || mA > 2500.0f) {
+    if (mA < SERVO_mA_MIN || mA > SERVO_mA_MAX) {
         consecutiveErrors[0]++;
-        if (consecutiveErrors[0] > 5) {  
+        if (consecutiveErrors[0] > ERRORI_CONSECUTIVI_SERVO) {  
             estSX_Ok = false;
             Serial.println("WARN: ServoEstSX anomalia corrente persistente!");
         }
@@ -983,9 +965,9 @@ void diagnosticaServi(){
     // Servo Esterno DX 
     mA = sensoreEstDX.getCurrent_mA();
     G_correnteEstDX = mA;
-    if (mA < 0.5f || mA > 2500.0f) {
+    if (mA < SERVO_mA_MIN || mA > SERVO_mA_MAX) {
         consecutiveErrors[1]++;
-        if (consecutiveErrors[1] > 5) {
+        if (consecutiveErrors[1] > ERRORI_CONSECUTIVI_SERVO) {
             estDX_Ok = false;
             Serial.println("WARN: ServoEstDX anomalia corrente persistente!");
         }
@@ -996,9 +978,9 @@ void diagnosticaServi(){
     // Servo Interno SX 
     mA = sensoreIntSX.getCurrent_mA();
     G_correnteIntSX = mA;
-    if (mA < 0.5f || mA > 2500.0f) {
+    if (mA < SERVO_mA_MIN || mA > SERVO_mA_MAX) {
         consecutiveErrors[2]++;
-        if (consecutiveErrors[2] > 5) {
+        if (consecutiveErrors[2] > ERRORI_CONSECUTIVI_SERVO) {
             intSX_Ok = false;
             Serial.println("WARN: ServoIntSX anomalia corrente persistente!");
         }
@@ -1009,9 +991,9 @@ void diagnosticaServi(){
     // Servo Interno DX 
     mA = sensoreIntDX.getCurrent_mA();
     G_correnteIntDX = mA;
-    if (mA < 0.5f || mA > 2500.0f) {
+    if (mA < SERVO_mA_MIN || mA > SERVO_mA_MAX) {
         consecutiveErrors[3]++;
-        if (consecutiveErrors[3] > 5) {
+        if (consecutiveErrors[3] > ERRORI_CONSECUTIVI_SERVO) {
             intDX_Ok = false;
             Serial.println("WARN: ServoIntDX anomalia corrente persistente!");
         }
@@ -1321,71 +1303,95 @@ void calcolaPID(float targetAltitudine, float targetRoll,
 {
     // 1. CALCOLO DEL TEMPO
     unsigned long tempoAttuale = millis();
-    float dt = (tempoAttuale - tempoPassatoPID) / 1000.0;   
+    float dt = (tempoAttuale - tempoPassatoPID) / 1000.0;
 
     if (dt <= 0.001) return; // Evita divisioni per zero
-    if (dt > 0.5) dt = 0.5;  // Evita lag improvvisi: limita dt max a 0.5 s 
+    if (dt > 0.5) dt = 0.5;  // Evita lag improvvisi: limita dt max a 0.5 s
     tempoPassatoPID = tempoAttuale;
 
-    G_targetVelocitaAttuale_km = targetVelocita; 
+    G_targetVelocitaAttuale_km = targetVelocita;
 
-    // 2. PID ALTITUDINE 
-    float targetPitch_Auto_g = 0.0;   
-    int gasCorrente = gasDiBase;      //  µs
+    static bool inStallo = false;
+    static bool inOverspeed = false;
 
-    if (G_altitudine_m > ALTEZZA_MAX_m) {
-        // Sopra la quota massima: forza un pitch negativo (scendi) e riduce il gas al minimo, ignorando il PID normale
+    if (!inStallo) {
+        inStallo = (velocitaAttuale < VEL_STALLO_X8_km);
+    } else {
+        inStallo = (velocitaAttuale < VEL_STALLO_X8_km + MARGINE);
+    }
+
+    if (!inOverspeed) {
+        inOverspeed = (velocitaAttuale > VEL_MASSIMA_X8_km);
+    } else {
+        inOverspeed = (velocitaAttuale > VEL_MASSIMA_X8_km - MARGINE);
+    }
+
+    if (inStallo) inOverspeed = false;
+
+    // 2. PID ALTITUDINE (bypassato se in stallo/overspeed: il pitch è dettato dal recupero)
+    float targetPitch_Auto_g = 0.0;
+    int gasCorrente = gasDiBase;      // µs
+
+    if (inStallo) {
+        targetPitch_Auto_g = PITCH_DOWN_FORZATO;
+        gasCorrente = GAS_MASSIMO;
+        resettaPID();  
+
+    } else if (inOverspeed) {
+        targetPitch_Auto_g = -PITCH_DOWN_FORZATO;
+        gasCorrente = GAS_MINIMO;
+        resettaPID();
+
+    } else if (G_altitudine_m > ALTEZZA_MAX_m) {
+        // Sopra la quota massima: forza un pitch negativo (scendi) e riduce il gas al minimo
         targetPitch_Auto_g = PITCH_DOWN_FORZATO;              // -8°, valore fisso
-        gasCorrente = GAS_MINIMO; 
-        pid_sommaErroriAlt =  0.0;             // Azzera l'integrale per evitare windup
-        pid_errorePassatoAlt_ms=  0.0;
-        G_pid_altErrore = 0.0; G_pid_altP = 0.0; G_pid_altI = 0.0; G_pid_altD = 0.0;
+        gasCorrente = GAS_MINIMO;
+        resettaPID();
+
     } else if (G_altitudine_m < ALTEZZA_MIN_m) {
         // Sotto la quota minima: forza un pitch positivo (sali) e aumenta il gas quasi al massimo
-        targetPitch_Auto_g = PITCH_UP_FORZATO;              // +12°, valore fisso
-        gasCorrente = GAS_MASSIMO - 10; 
-        pid_sommaErroriAlt =  0.0;
-        pid_errorePassatoAlt_ms =  0.0;
-        G_pid_altErrore = 0.0; G_pid_altP = 0.0; G_pid_altI = 0.0; G_pid_altD = 0.0;
+        targetPitch_Auto_g = PITCH_UP_FORZATO;                // +12°, valore fisso
+        gasCorrente = GAS_MASSIMO ;
+        resettaPID();
+
     } else {
-        // Quota nel range ammesso: calcolo PID normale
-        float erroreAltitudine_m = targetAltitudine - G_altitudine_m;     
-        erroreAltitudine_m = constrain(erroreAltitudine_m, -20.0, 20.0);     // Limitato a ±20 m per evitare comandi eccessivi
+        // Quota nel range ammesso, nessuna emergenza velocità: calcolo PID normale
+        float erroreAltitudine_m = targetAltitudine - G_altitudine_m;
+        erroreAltitudine_m = constrain(erroreAltitudine_m, -20.0, 20.0);   // Limitato a ±20 m
 
-        float P_alt_g = Kp_alt * erroreAltitudine_m;                       
+        float P_alt_g = Kp_alt * erroreAltitudine_m;
 
-        pid_sommaErroriAlt += erroreAltitudine_m * dt;                      //  (m*s)
-        pid_sommaErroriAlt  = constrain(pid_sommaErroriAlt, -20.0, 20.0); // Anti-windup: satura l'integrale
-        float I_alt_g = Ki_alt * pid_sommaErroriAlt;                        
+        pid_sommaErroriAlt += erroreAltitudine_m * dt;                     // (m*s)
+        pid_sommaErroriAlt  = constrain(pid_sommaErroriAlt, -20.0, 20.0);  // Anti-windup
+        float I_alt_g = Ki_alt * pid_sommaErroriAlt;
 
-        float D_alt_g = Kd_alt * ((erroreAltitudine_m - pid_errorePassatoAlt_ms) / dt);  
+        float D_alt_g = Kd_alt * ((erroreAltitudine_m - pid_errorePassatoAlt_ms) / dt);
         pid_errorePassatoAlt_ms = erroreAltitudine_m;
 
-        targetPitch_Auto_g = constrain(P_alt_g + I_alt_g + D_alt_g, -10.0, 15.0); // Somma PID, limitata a [-10°, +15°]
+        targetPitch_Auto_g = constrain(P_alt_g + I_alt_g + D_alt_g, -10.0, 15.0);
 
         G_pid_altErrore = erroreAltitudine_m; G_pid_altP = P_alt_g; G_pid_altI = I_alt_g; G_pid_altD = D_alt_g;
     }
     G_pid_targetPitchAuto = targetPitch_Auto_g;
 
-    // 3. PID PITCH
-    float errorePitch_g = targetPitch_Auto_g - pitchReale;   
+    // 3. PID PITCH — insegue il target (normale o di emergenza) calcolato sopra
+    float errorePitch_g = targetPitch_Auto_g - pitchReale;
 
     float P_Pitch = Kp_pitch * errorePitch_g;
 
     pid_sommaErroriPitch += errorePitch_g * dt;
-    pid_sommaErroriPitch  = constrain(pid_sommaErroriPitch, -40.0, 40.0);   // Anti-windup
+    pid_sommaErroriPitch  = constrain(pid_sommaErroriPitch, -40.0, 40.0);
     float I_Pitch = Ki_pitch * pid_sommaErroriPitch;
 
     float D_Pitch = Kd_pitch * ((errorePitch_g - pid_errorePassatoPitch_g) / dt);
     pid_errorePassatoPitch_g = errorePitch_g;
 
-    comandoPitchOut_g = (int)(P_Pitch + I_Pitch + D_Pitch);        
+    comandoPitchOut_g = (int)(P_Pitch + I_Pitch + D_Pitch);
     comandoPitchOut_g = constrain(comandoPitchOut_g, -MAX_PITCH_g, MAX_PITCH_g);
 
     G_pid_pitchErrore = errorePitch_g; G_pid_pitchP = P_Pitch; G_pid_pitchI = I_Pitch; G_pid_pitchD = D_Pitch;
 
-    // 4. PID ROLL 
-    float erroreRoll_g = targetRoll - rollReale;    
+    float erroreRoll_g = targetRoll - rollReale;
 
     float P_Roll = Kp_roll * erroreRoll_g;
 
@@ -1396,13 +1402,18 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     float D_Roll = Kd_roll * ((erroreRoll_g - pid_errorePassatoRoll_g) / dt);
     pid_errorePassatoRoll_g = erroreRoll_g;
 
-    comandoRollOut_g = (int)(P_Roll + I_Roll + D_Roll);     
+    comandoRollOut_g = (int)(P_Roll + I_Roll + D_Roll);
     comandoRollOut_g  = constrain(comandoRollOut_g,  -MAX_ROLL_g,  MAX_ROLL_g);
 
     G_pid_rollErrore = erroreRoll_g; G_pid_rollP = P_Roll; G_pid_rollI = I_Roll; G_pid_rollD = D_Roll;
 
-    // 5. AUTOTHROTTLE (PID velocità)
-    float erroreVel_km = targetVelocita - velocitaAttuale;    
+    if (inStallo || inOverspeed) {
+        comandoGasOut = gasCorrente;
+        resettaPID();
+        return;
+    }
+
+    float erroreVel_km = targetVelocita - velocitaAttuale;
 
     float P_vel = Kp_vel * erroreVel_km;
 
@@ -1413,7 +1424,7 @@ void calcolaPID(float targetAltitudine, float targetRoll,
     float D_vel = Kd_vel * ((erroreVel_km - pid_errorePassatoVel_km) / dt);
     pid_errorePassatoVel_km = erroreVel_km;
 
-    int gasCalcolato = gasCorrente + (int)(P_vel + I_vel + D_vel);   //µs
+    int gasCalcolato = gasCorrente + (int)(P_vel + I_vel + D_vel);   // µs
     comandoGasOut = constrain(gasCalcolato, GAS_MINIMO, GAS_MASSIMO);
 
     G_pid_velErrore = erroreVel_km; G_pid_velP = P_vel; G_pid_velI = I_vel; G_pid_velD = D_vel;
@@ -1422,7 +1433,7 @@ void calcolaPID(float targetAltitudine, float targetRoll,
 // Determina se il drone è "in volo"
 void verifica_drone_in_volo() {          
     if (!droneInVolo) {
-        bool velocitaSufficiente   = (G_Airspeed_ms > SOGLIA_VELO_DECOLLO_MS && G_Groundspeed_ms > SOGLIA_VELO_DECOLLO_MS);   
+        bool velocitaSufficiente   = (G_Airspeed_ms > SOGLIA_VELO_DECOLLO_MS);   
         bool altitudineSufficiente = (G_altitudine_m > SOGLIA_ALT_DECOLLO_M);                                                 
 
         if (velocitaSufficiente && altitudineSufficiente) {
@@ -1462,7 +1473,7 @@ void gestisciSchianto() {
     G_accelZ = accel.z();
     G_accelTotale = accelerazioneTotale;
     
-    if (accelerazioneTotale > SOGLIA_G_SCHIANTO) {    // Sopra 50 m/s^2
+    if (accelerazioneTotale > SOGLIA_G_SCHIANTO) {    
         contatoreImpatto++;
         if (contatoreImpatto >= SEMPLE_VALORI_SCHIANTO) {   // Confermato dopo 3 CICLI di loop consecutivi 
                 statoSchiantoRilevato = true;
@@ -1847,18 +1858,6 @@ void elaboraComando(const String& cmd) {
     } else if (campo == "SET_VEL_AVVICINAMENTO") {
         float v = valoreStr.toFloat();   // km/h
         if (v >= 15.0 && v <= 150.0) { VELOCITA_AVVICINAMENTO_km = v; inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_ALT_MIN") {
-        float v = valoreStr.toFloat();   // metri (m)
-        if (v >= 2.0 && v < ALTEZZA_MAX_m) { ALTEZZA_MIN_m = v; inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite_o_maggiore_di_max");
-    } else if (campo == "SET_ALT_MAX") {
-        float v = valoreStr.toFloat();   // metri (m)
-        if (v > ALTEZZA_MIN_m && v <= 500.0) { ALTEZZA_MAX_m = v; inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite_o_minore_di_min");
-    } else if (campo == "SET_LIMITE_TEMP_MOTORE") {
-        float v = valoreStr.toFloat();   // gradi Celsius (°C)
-        if (v > T_MOTORE_THROTTLE_START && v <= 120.0) { T_MOTORE_THROTTLE_END = v; inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_RAGGIO_WAYPOINT") {
-        float v = valoreStr.toFloat();   // metri (m)
-        if (v >= 5.0 && v <= 100.0) { RAGGIO_ACCETTAZIONE_MINIMO_m = v; inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
 
     // ─── COMANDI: CONTROLLO/DIAGNOSTICA ───
     } else if (campo == "REQ_DIAG") {
