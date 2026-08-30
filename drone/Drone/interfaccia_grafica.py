@@ -123,8 +123,8 @@ T_MOTOR_CRIT = 85    # >= soglia → ROSSO + "errore.wav"
 T_MOTOR_WARN = T_MOTOR_CRIT - 5  # >= soglia → GIALLO
 
 # ── Tensione servo (V) ────────────────────────────────────────
-SERVO_V_MIN = CONFIG["SERVO_V_MIN"]  # < soglia → ROSSO
-SERVO_V_MAX = CONFIG["SERVO_V_MAX"]  # > soglia → ROSSO
+SERVO_V_MIN = CONFIG["SERVO_mA_MIN"]  # < soglia → ROSSO
+SERVO_V_MAX = CONFIG["SERVO_mA_MAX"]  # > soglia → ROSSO
 
 # ── Scale barre batteria (V) ──────────────────────────────────
 VBAR_TEENSY_MIN = 4.0
