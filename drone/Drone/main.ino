@@ -854,7 +854,6 @@ void verificaDroneInVolo() {
     }
 }
 
-//  GESTIONE LUCI DI STATO -------------------------------------------------------------
 void gestisciAllarmi() {
     // 1. EMERGENZA CRITICA: guasto servi (tutti i LED accesi fissi come segnale univoco di emergenza)
     if (!estSxOk || !estDxOk || !intSxOk || !intDxOk) {
@@ -1682,10 +1681,6 @@ void inizializzaMotore() {
     motore.writeMicroseconds(GAS_NEUTRO_us);
 }
 
-
-// ============================================================
-//  LOOP
-// ============================================================
 void loop()
 {
     comandiDaTerra();
