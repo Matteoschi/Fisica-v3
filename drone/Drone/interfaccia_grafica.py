@@ -78,18 +78,18 @@ CD_FLIGHT_SLOW      = 6500
 CD_OVERSPEED        = 11500
 CD_ERRORE           = 8500
 
-# ── Roll (limite letto da config.h: MAX_ROLL_g) ─────────────────
-ROLL_CRIT = CONFIG["MAX_ROLL_g"]     # ROSSO  in HUD + "bank_angle.wav"
+# ── Roll (limite letto da config.h: MAX_ROLL_deg) ─────────────────
+ROLL_CRIT = CONFIG["MAX_ROLL_deg"]     # ROSSO  in HUD + "bank_angle.wav"
 ROLL_WARN = ROLL_CRIT - 5  # GIALLO in HUD
-# ── Pitch (limite letto da config.h: MAX_PITCH_g) ───────────────
-PITCH_CRIT = CONFIG["MAX_PITCH_g"]    # ROSSO  in HUD + "pitch.wav"
+# ── Pitch (limite letto da config.h: MAX_PITCH_deg) ───────────────
+PITCH_CRIT = CONFIG["MAX_PITCH_deg"]    # ROSSO  in HUD + "pitch.wav"
 PITCH_WARN = PITCH_CRIT - 5  # GIALLO
 # ── Velocità (km/h) ───────────────────────────────────────────
-SPD_STALL   = CONFIG["VEL_STALLO_X8_km"]   # < soglia → "stall.wav" + ROSSO
+SPD_STALL   = CONFIG["VELOCITA_STALLO_X8_kmh"]   # < soglia → "stall.wav" + ROSSO
 SPD_AIR_LOW = SPD_STALL+15   # < soglia → "air_speed_low.wav" + GIALLO
 SPD_SLOW    = SPD_STALL+30   # < soglia → "fligh slow.wav"
 
-SPD_CRIT    = CONFIG["MAX_AIRSPEED_X8_km"]   # >= soglia → ROSSO  in HUD + "overspeed.wav"
+SPD_CRIT    = CONFIG["MAX_AIRSPEED_X8_kmh"]   # >= soglia → ROSSO  in HUD + "overspeed.wav"
 SPD_WARN    = SPD_CRIT - 15   # >= soglia → GIALLO in HUD
 
 
@@ -102,7 +102,7 @@ VDISCESA_SINK_RATE  = -4.0   # qualsiasi quota        → sink rate
 VDISCESA_CALLOUT    = -0.2   # attiva callout quota
 
 # ── Quote (m) ─────────────────────────────────────────────────
-ALT_PULL_UP       =  CONFIG["ALTEZZA_MIN_m"]       # sotto questa quota → pull_up
+ALT_PULL_UP       =  CONFIG["ALTITUDINE_MIN_m"]       # sotto questa quota → pull_up
 ALT_TERRAIN_PU    = ALT_PULL_UP + 5   # sotto questa quota → terrain pull up
 ALT_TERRAIN       = ALT_PULL_UP + 10  # sotto questa quota → terrain
 ALT_DONT_SINK     = ALT_PULL_UP + 15  # sotto questa quota → dont sink
@@ -147,10 +147,10 @@ SAT_MIN = 5           # < soglia → ROSSO
 THR_WARN = 0.8        # >= soglia → barra GIALLA
 
 # ── Valori letti direttamente da config.h ───────────────────────
-SOGLIA_G_SCHIANTO = CONFIG["SOGLIA_G_SCHIANTO"]  # accelerazione IMU oltre la quale viene rilevato uno schianto
-GAS_NEUTRO  = CONFIG["GAS_NEUTRO"]   # gas "zero" usato per calcolare la percentuale di gas erogato
-GAS_MASSIMO = CONFIG["GAS_MASSIMO"]
-GAS_MINIMO  = CONFIG["GAS_MINIMO"]   # gas minimo di armamento (usato per la protezione termica)
+SOGLIA_G_SCHIANTO = CONFIG["SOGLIA_ACCELERAZIONE_SCHIANTO_ms2"]  # accelerazione IMU oltre la quale viene rilevato uno schianto
+GAS_NEUTRO  = CONFIG["GAS_NEUTRO_us"]   # gas "zero" usato per calcolare la percentuale di gas erogato
+GAS_MASSIMO = CONFIG["GAS_MASSIMO_us"]
+GAS_MINIMO  = CONFIG["GAS_MINIMO_us"]   # gas minimo di armamento (usato per la protezione termica)
 
 # ── Orizzonte artificiale ────────────────────────────────────
 PFD_CX, PFD_CY, PFD_R = W // 2, 245, 142
@@ -289,16 +289,16 @@ from datetime import datetime as _dt
 
 FW_VALORE_BATT_MOTORE_BASSA   = CONFIG["VALORE_BATT_MOTORE_BASSA_V"]    # V
 FW_VALORE_BATT_TEENSY_BASSA   = CONFIG["VALORE_BATT_TEENSY_BASSA_V"]    # V
-FW_T_MOTORE_THROTTLE_START    = CONFIG["T_MOTORE_THROTTLE_START"]     # °C  
-FW_T_MOTORE_THROTTLE_END      = CONFIG["T_MOTORE_THROTTLE_END"]       # °C  
-FW_ALTEZZA_MAX_LIDAR          = CONFIG["ALTEZZA_MAX_LIDAR_m"]          # m
-FW_ALTEZZA_MAX_SENSORE_OTTICO = CONFIG["ALTEZZA_MAX_SENSORE_OTTICO_m"] # m
+FW_T_MOTORE_THROTTLE_START    = CONFIG["MIN_THROTTLE_START_TEMP_C"]     # °C
+FW_T_MOTORE_THROTTLE_END      = CONFIG["MAX_THROTTLE_END_TEMP_C"]       # °C
+FW_ALTEZZA_MAX_LIDAR          = CONFIG["ALTITUDINE_MAX_LIDAR_m"]          # m
+FW_ALTEZZA_MAX_SENSORE_OTTICO = CONFIG["ALTITUDINE_MAX_OTTICO_m"] # m
 FW_SAT_MIN_FIX                = 5      # satelliti minimi per un fix affidabile (soglia GUI, non in config.h)
 FW_PITOT_DIFF_ANOMALIA_KMH    = 25.0   # soglia derivata GUI (non in config.h)
 FW_PITOT_DURATA_ANOMALIA_S    = 3.0    # secondi di persistenza richiesti prima di segnalare
 FW_DISTANZA_FRENATA           = CONFIG["DISTANZA_FRENATA_m"]           # m
-PITCH_UP_FORZATO   = CONFIG["PITCH_UP_FORZATO"]     # °
-PITCH_DOWN_FORZATO = CONFIG["PITCH_DOWN_FORZATO"]   # °
+PITCH_UP_FORZATO   = CONFIG["PITCH_UP_FORZATO_deg"]     # °
+PITCH_DOWN_FORZATO = CONFIG["PITCH_DOWN_FORZATO_deg"]   # °
 ERRORI_CONSECUTIVI_SERVO = CONFIG["ERRORI_CONSECUTIVI_SERVO"]   # Numero di letture consecutive fuori range prima di segnalare anomalia persistente
 
 LIVELLI = {
