@@ -60,4 +60,9 @@ const int ERRORI_CONSECUTIVI_SERVO = 20;   // Numero di letture consecutive fuor
 const int CAPACITA_TEENSY = 5200;
 const int CAPACITA_MOTORE = 2200;
 
+const unsigned long TIMEOUT_GPS_ms = 1500; // Tolleranza di 1.5 secondi per perdita segnale
+const unsigned long TEMPO_CONFERMA_SCHIANTO_ms = 350; // Es. 350ms continui di G estremi
+
+const float ZONA_BLEND_START_m = ALTITUDINE_MAX_OTTICO_m - 2.0f;
+
 #endif
