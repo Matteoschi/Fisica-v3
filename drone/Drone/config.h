@@ -1,6 +1,6 @@
 #ifndef CONFIG_H
 #define CONFIG_H
-
+const int BAUD_RATE_LORA  = 57600;
 // BATTERIE
 // Aggiornato per HOOVO 4S 14.8V (motore) e OVONIC 3S 11.1V (avionica)
 const float VALORE_BATT_MOTORE_BASSA_V = 14.0f; // ~3.5V per cella su 4S

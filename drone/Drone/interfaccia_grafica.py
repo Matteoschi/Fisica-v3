@@ -4,7 +4,12 @@ import math
 import random
 import re
 import os
+import time
 
+try:
+    import serial
+except ImportError:
+    serial = None
 pygame.init()
 
 
@@ -108,7 +113,7 @@ def testo_valori(surf, label, valore, x, y, colore=C_WHITE):
     testo(surf, valore, (x + 150, y), F_VAL, colore)
 
 
-def draw_pannel(surf, x, y, w, h, title=""):
+def draw_pannel(surf, x, y, w, h, title="", color=C_ACCENT):
     """Disegna il rettangolo di un pannello, con barra del titolo sopra."""
     rect = pygame.Rect(x, y, w, h)
     pygame.draw.rect(surf, C_PANEL, rect, border_radius=8)
@@ -117,7 +122,7 @@ def draw_pannel(surf, x, y, w, h, title=""):
         barra = pygame.Rect(x, y, w, 28)
         pygame.draw.rect(surf, C_BORDER, barra, 2,
                           border_top_left_radius=8, border_top_right_radius=8)
-        testo(surf, title, barra.center, F_TITLE, C_ACCENT, anchor="center")
+        testo(surf, title, barra.center, F_TITLE, color, anchor="center")
     return rect
 
 
@@ -143,26 +148,39 @@ def draw_battery(surf, x, y, w, h, valore, valore_min, valore_max, colore, Name,
     testo(surf, f"{valore}{unita}", (corpo.centerx, corpo.centery), F_VAL, C_WHITE, anchor="center")
 
 
-def draw_servo_leds(surf, x, y, degrees, label, v, error=False):
+def draw_servo_leds(surf, x, y, degrees, label, v, error=False, warning=False):
     """Disegna i 5 LED (grandi) della posizione servo + gradi + tensione, sempre visibili."""
     LED_W, LED_H, LED_GAP, N = 80, 36, 10, 5
-    delta = degrees - 90
+    
     leds = [False] * N
+    
+    # Il centro è sempre acceso per mostrare che il sistema è attivo
     leds[2] = True
-    if delta > 10: leds[3] = True
-    if delta > 25: leds[4] = True
-    if delta < -10: leds[1] = True
-    if delta < -25: leds[0] = True
+    
+    # Logica per accendere i LED in base all'angolo (-90 a +90)
+    # Sopra lo zero (Positivi)
+    if degrees > 20: leds[3] = True
+    if degrees > 60: leds[4] = True
+    
+    # Sotto lo zero (Negativi)
+    if degrees < -20: leds[1] = True
+    if degrees < -60: leds[0] = True
 
     testo(surf, label, (x + LED_W // 2, y - 20), F_VAL, C_TEXT, anchor="center")
+    
     for i in range(N):
+        # L'indice 0 sarà disegnato più in basso, il 4 più in alto
         y_led = y + (N - 1 - i) * (LED_H + LED_GAP)
+        
         if error:
-            col = C_RED  # servo NOT OK -> tutti i led rossi, non solo la posizione corrente
+            col = C_RED  # servo NOT OK -> tutti i led rossi
+        elif warning:
+            col = C_YELLOW
         elif leds[i]:
             col = C_GREEN if i == 2 else C_ACCENT
         else:
-            col = (22, 28, 42)
+            col = (22, 28, 42) # Colore spento
+            
         pygame.draw.rect(surf, col, (x, y_led, LED_W, LED_H), border_radius=5)
         pygame.draw.rect(surf, C_BORDER, (x, y_led, LED_W, LED_H), 1, border_radius=5)
 
@@ -228,9 +246,9 @@ def draw_header(surf, stato):
     pygame.draw.rect(surf, C_PANEL, barra)
     pygame.draw.line(surf, C_BORDER, (0, HEADER_H), (W, HEADER_H), 2)
 
-    testo(surf, stato["modo"], (W // 2, HEADER_H // 2), F_HEAD, C_WHITE, anchor="center")
+    testo(surf, stato["MODALITA_VOLO"], (W // 2, HEADER_H // 2), F_HEAD, C_WHITE, anchor="center")
 
-    if stato["in_volo"]:
+    if stato["Drone_in_volo"]:
         testo(surf, "IN FLIGHT", (W - 30, HEADER_H // 2), F_HEAD, C_ACCENT, anchor="midright")
     else:
         testo(surf, "ON GROUND", (W - 30, HEADER_H // 2), F_HEAD, C_DIM, anchor="midright")
@@ -250,7 +268,7 @@ def draw_header(surf, stato):
         colore_sat = C_YELLOW
     else:
         colore_sat = C_RED
-    testo(surf, f"SAT {n_sat}", (260, HEADER_H // 2), F_HEAD, colore_sat, anchor="midleft")
+    testo(surf, f"SATELLITI {n_sat}", (260, HEADER_H // 2), F_HEAD, colore_sat, anchor="midleft")
 
 
 # Assicurati di avere il colore arancione definito tra le tue costanti
@@ -281,10 +299,11 @@ def draw_status_strip(surf, x, y, w, h, stato):
     # 2. Creazione della lista dei chip accoppiando Etichetta e Colore
     chips = [
         ("IMU PRONTA", C_GREEN if stato["imu_pronto"] else C_RED),
-        ("FLUSSO OTTICO", C_GREEN if stato["flusso_ottico_ok"] else C_RED),
+        ("FLUSSO OTTICO", C_GREEN if stato["flusso_ottico_ok"] else C_YELLOW),
         ("BAROMETRO", C_GREEN if stato["baro_pronto"] else C_RED),
-        ("SENS. CORRENTE", C_GREEN if stato["sensori_corrente_ok"] else C_RED),
+        ("SENS. CORRENTE", C_GREEN if stato["sensori_corrente_ok"] else C_YELLOW),
         ("NO SCHIANTO", C_GREEN if not stato["stato_schianto_rilevato"] else C_RED),
+        ("In Volo", C_GREEN if stato["Drone_in_volo"] else C_RED),
         ("GPS", colore_gps)
     ]
     
@@ -296,11 +315,6 @@ def draw_status_strip(surf, x, y, w, h, stato):
     for i, (label, colore) in enumerate(chips):
         draw_chip(surf, start_x + i * (chip_w + gap), cy, chip_w, chip_h, label, colore)
 
-    # 4. Calibrazione IMU (0-3)
-    cal = stato.get("imu_cal_sys", 0)
-    colore_cal = C_GREEN if cal >= 3 else (C_YELLOW if cal == 2 else C_RED)
-    cal_x = start_x + len(chips) * (chip_w + gap) + 10
-    testo(surf, f"CAL. IMU {cal}/3", (cal_x, y + h // 2), F_VAL, colore_cal, anchor="midleft")
 
 
 def draw_power_panel(surf, x, y, w, h, stato):
@@ -312,7 +326,7 @@ def draw_power_panel(surf, x, y, w, h, stato):
 
     kx = x + 145
     ky = y + 40
-    if stato["modo"].strip().upper() != "MANUALE":
+    if stato["MODALITA_VOLO"].strip().upper() != "MANUALE":
         draw_battery(surf, thr.x, thr.y, thr.width, thr.height, stato["out_gas_us"], CONFIG["GAS_MASSIMO_us"], CONFIG["GAS_MASSIMO_us"], colore_gas, "GAS", "us")
         testo(surf, "OUTPUT PID" , (kx, ky), F_TITLE, C_ACCENT)
         ky += 30
@@ -391,13 +405,13 @@ def draw_panel_attitude(surf, x, y, w, h, stato):
 
     modulo = math.sqrt(stato["vel_ottica_x"] ** 2 + stato["vel_ottica_y"] ** 2)
 
-    testo_valori(surf, "Alt :", f"{stato['altitudine']:.1f} m", start_x, start_y + riga * 0, C_WHITE)
-    testo_valori(surf, "Alt Lidar :", f"{stato['alt_lidar']:.2f} m", start_x, start_y + riga * 1, colore_lidar)
-    testo_valori(surf, "Alt Baro :", f"{stato['alt_baro']:.2f} m", start_x, start_y + riga * 2, colore_baro)
-    testo_valori(surf, "Vento:", f"{stato['vento_vel_kmh']:.1f} km/h Dir: {stato['vento_dir']:.0f}° risp. nord", start_x, start_y + riga * 3, C_WHITE)
+    testo_valori(surf, "Alt Lidar :", f"{stato['alt_lidar']:.2f} m", start_x, start_y + riga * 0, colore_lidar)
+    testo_valori(surf, "Alt Baro :", f"{stato['alt_baro']:.2f} m", start_x, start_y + riga * 1, colore_baro)
+    testo_valori(surf, "Vento:", f"{stato['vento_vel_kmh']:.1f} km/h", start_x, start_y + riga * 2, C_WHITE)
+    testo_valori(surf, "Direzione Vento:", f"{stato['vento_dir']:.0f}° ", start_x, start_y + riga * 3, C_WHITE)
     testo_valori(surf, "Vel ott X:", f"{stato['vel_ottica_x']:.2f}", start_x, start_y + riga * 4, C_WHITE if ottico_disp else C_DIM)
     testo_valori(surf, "Vel ott Y:", f"{stato['vel_ottica_y']:.2f}", start_x, start_y + riga * 5, C_WHITE if ottico_disp else C_DIM)
-    testo_valori(surf, "Vel mod. ott:", f"{modulo:.2f} m/s", start_x, start_y + riga * 6, colore_ottico)
+    testo_valori(surf, "Vel mod. ott:", f"{modulo*3.6:.2f} km/h", start_x, start_y + riga * 6, colore_ottico)
 
 def draw_pfd(surf, cx, cy, r, panel_x, panel_w, panel_top, stato, is_pid):
     draw_horizon(surf, cx, cy, r, stato["pitch"], stato["roll"])
@@ -409,21 +423,40 @@ def draw_pfd(surf, cx, cy, r, panel_x, panel_w, panel_top, stato, is_pid):
 
     # posizione GPS del velivolo, sempre visibile, angolo in alto a destra del pannello
     gx = panel_x + panel_w - 150
-    testo(surf, "GPS", (gx, panel_top + 36), F_TITLE, C_ACCENT)
-    testo(surf, f"Lat: {stato['lat']:.5f}", (gx, panel_top + 56), F_LABEL, C_WHITE)
-    testo(surf, f"Lon: {stato['lon']:.5f}", (gx, panel_top + 74), F_LABEL, C_WHITE)
-
-    # zona informativa sotto l'orizzonte: velocità (sinistra) e navigazione (destra)
     info_y = cy + r + 40
     riga = 22
     lx = cx - 250
     rx = cx + 20
 
+    testo(surf, "GPS", (gx, panel_top + 36), F_TITLE, C_ACCENT)
+    testo(surf, f"Lat: {stato['lat']:.5f}", (gx, panel_top + 56), F_LABEL, C_WHITE)
+    testo(surf, f"Lon: {stato['lon']:.5f}", (gx, panel_top + 74), F_LABEL, C_WHITE)
+    testo(surf, f"Crociera : {stato['vel_crociera_kmh']:.1f} km/h", (lx-20, panel_top + 56), F_LABEL, C_WHITE)
+    testo(surf, f"Avvicin : {stato['vel_avvicinamento_kmh']:.1f} km/h", (lx-20, panel_top + 74), F_LABEL, C_WHITE)
+
+    # zona informativa sotto l'orizzonte: velocità (sinistra) e navigazione (destra)
+
+
     testo(surf, "VELOCITA'", (lx, info_y), F_TITLE, C_ACCENT)
     testo_valori(surf, "Aria km/h:", f"{stato['vel_aria_kmh']:.1f}", lx, info_y + 26, C_WHITE)
     testo_valori(surf, "Suolo km/h:", f"{stato['vel_suolo_gps_kmh']:.1f}", lx, info_y + 26 + riga, C_WHITE)
-    testo_valori(surf, "Crociera km/h:", f"{stato['vel_crociera_kmh']:.1f}", lx, info_y + 26 + riga * 2, C_DIM)
-    testo_valori(surf, "Avvicin. km/h:", f"{stato['vel_avvicinamento_kmh']:.1f}", lx, info_y + 26 + riga * 3, C_DIM)
+    testo_valori(surf, "Rotta attuale :", f"{stato['rotta_attuale_deg']:.1f} °", lx, info_y + 26 + riga * 2, C_WHITE)
+
+    testo(surf, "ANGOLI EULERO", (rx, info_y+150), F_TITLE, C_ACCENT)
+    pitch_abs = abs(stato["pitch"])
+    roll_abs = abs(stato["roll"])
+    colore_pitch = C_RED if pitch_abs >= CONFIG["MAX_PITCH_deg"] else (C_YELLOW if pitch_abs >= CONFIG["MAX_PITCH_deg"] - 5 else C_WHITE)
+    colore_roll = C_RED if roll_abs >= CONFIG["MAX_ROLL_deg"] else (C_YELLOW if roll_abs >= CONFIG["MAX_ROLL_deg"] - 5 else C_WHITE)
+
+    testo_valori(surf, "PITCH:", f"{stato['pitch']:.1f}", rx, info_y + 26+150, colore_pitch)
+    testo_valori(surf, "YAW:", f"{stato['yaw']:.1f}", rx, info_y + 26 + riga+150, C_WHITE)
+    testo_valori(surf, "ROLL:", f"{stato['roll']:.1f}", rx, info_y + 26 + riga * 2+150, colore_roll)
+
+    testo(surf, "IMU CALL", (lx, info_y+150), F_TITLE, C_ACCENT)
+    testo_valori(surf, "SYS:", f"{stato['imu_cal_sys']:.1f}", lx, info_y + 26+150, C_GREEN if stato['imu_cal_sys'] >= 3 else (C_YELLOW if stato['imu_cal_sys'] == 2 else C_RED))
+    testo_valori(surf, "GYRO:", f"{stato['imu_cal_gyro']:.1f}", lx, info_y + 26+150 + riga, C_GREEN if stato['imu_cal_gyro'] >= 3 else (C_YELLOW if stato['imu_cal_gyro'] == 2 else C_RED))
+    testo_valori(surf, "ACCEL :", f"{stato['imu_cal_accel']:.1f}", lx, info_y + 26+150 + riga * 2, C_GREEN if stato['imu_cal_accel'] >= 3 else (C_YELLOW if stato['imu_cal_accel'] == 2 else C_RED))
+    testo_valori(surf, "MAH :", f"{stato['imu_cal_mag']:.1f}", lx, info_y + 26+150 + riga * 3, C_GREEN if stato['imu_cal_mag'] >= 3 else (C_YELLOW if stato['imu_cal_mag'] == 2 else C_RED))
 
     if is_pid:
         testo(surf, "NAVIGAZIONE", (rx, info_y), F_TITLE, C_ACCENT)
@@ -432,34 +465,45 @@ def draw_pfd(surf, cx, cy, r, panel_x, panel_w, panel_top, stato, is_pid):
         testo_valori(surf, "Rotta target °:", f"{stato['rotta_target']:.0f}", rx, info_y + 26 + riga, C_WHITE)
         testo_valori(surf, "Errore rotta °:", f"{stato['errore_rotta']:.1f}", rx, info_y + 26 + riga * 2, C_WHITE)
         testo_valori(surf, "Roll target °:", f"{stato['roll_target']:.1f}", rx, info_y + 26 + riga * 3, C_WHITE)
+        testo_valori(surf, "altitudine_target:", f"{stato['altitudine_target']:.1f} m", rx, info_y + 26 + riga * 4, C_WHITE)
 
 
 def draw_servi_panel(surf, x, y, w, h, stato):
-    draw_pannel(surf, x, y, w, h, "SERVI")
+    draw_pannel(surf, x, y, w, h, "SERVI" if stato["servo_sicurezza"] else "SICUREZZA SERVI DISATTIVATA", C_ACCENT if stato["servo_sicurezza"] else C_YELLOW)
 
-    colore_sic = C_GREEN if stato["servo_sicurezza"] else C_RED
-    testo(surf, "SICUREZZA " + ("OK" if stato["servo_sicurezza"] else "NOT OK"),
-          (x + w - 20, y + 14), F_SMALL, colore_sic, anchor="topright")
+    # Estrazione degli stati logici (generati e inviati dal codice C)
+    esx_ok = stato.get("servo_est_sx_ok", True)
+    isx_ok = stato.get("servo_int_sx_ok", True)
+    idx_ok = stato.get("servo_int_dx_ok", True)
+    edx_ok = stato.get("servo_est_dx_ok", True)
 
+    # Struttura: (Gradi, Etichetta, Tensione, Stato Proprio, Stato del Simmetrico)
     servi = [
-        (stato["deg_isx"], "Int SX", stato["v_int_sx"]),
-        (stato["deg_idx"], "Int DX", stato["v_int_dx"]),
-        (stato["deg_esx"], "Est SX", stato["v_est_sx"]),
-        (stato["deg_edx"], "Est DX", stato["v_est_dx"]),
+        (stato["deg_esx"], "Est SX", stato["v_est_sx"], esx_ok, edx_ok),
+        (stato["deg_isx"], "Int SX", stato["v_int_sx"], isx_ok, idx_ok),
+        (stato["deg_idx"], "Int DX", stato["v_int_dx"], idx_ok, isx_ok),
+        (stato["deg_edx"], "Est DX", stato["v_est_dx"], edx_ok, esx_ok),
     ]
 
     gap = (w - 60) // 4
-    start_x = x + 50
-    start_y = y + 55
+    start_x = x + 37
+    start_y = y + 70
 
-    for i, (deg, lbl, v) in enumerate(servi):
-        # identificazione NOT OK: tensione fuori dal range atteso -> tutti i led diventano rossi
-        errore = not (CONFIG["SERVO_V_MIN"] < v < CONFIG["SERVO_V_MAX"])
-        draw_servo_leds(surf, start_x + i * gap, start_y, deg, lbl, v, error=errore)
-
+    for i, (deg, lbl, v, is_ok, simmetrico_ok) in enumerate(servi):
+        errore = False  # Condizione critica (Rosso)
+        avviso = False  # Condizione riflessa dal simmetrico (Giallo)
+        
+        if stato["servo_sicurezza"]:
+            if not is_ok:
+                errore = True
+            elif not simmetrico_ok:
+                avviso = True
+                
+        # Passa l'argomento warning (o equivalente) alla funzione che disegna i led
+        draw_servo_leds(surf, start_x + i * gap, start_y, deg, lbl, v, error=errore, warning=avviso)
 
 def draw_battery_panel(surf, x, y, w, h, stato):
-    draw_pannel(surf, x, y, w, h, "BATTERY / POWER SYSTEM")
+    draw_pannel(surf, x, y, w, h, "ALIMENTAZIONE" if stato["alimentazione_sicurezza"] else "SICUREZZA ALIMENTAZIONE DISATTIVATA", C_ACCENT if stato["alimentazione_sicurezza"] else C_RED)
 
     kx = x + 40
     ky = y + 45
@@ -505,36 +549,22 @@ def draw_battery_panel(surf, x, y, w, h, stato):
             pygame.draw.circle(surf, C_GREEN, (px, linea_y), 3)
 
     status_y = ky + bar_h + 46
-    stato_txt = "RELE' ATTIVO" if rele_attivo else "RELE' NON ATTIVO"
-    colore_stato = C_GREEN if rele_attivo else C_WHITE
-    testo(surf, stato_txt, (x + w // 2, status_y), F_TITLE, colore_stato, anchor="center")
 
-    colore_alim = C_GREEN if stato["alimentazione_sicurezza"] else C_RED
-    testo(surf, "ALIM. SICUREZZA " + ("OK" if stato["alimentazione_sicurezza"] else "NOT OK"),
-          (x + w // 2, status_y + 20), F_SMALL, colore_alim, anchor="center")
 
     # carica residua e autonomia: motore e teensy affiancati
-    info_y = status_y + 46
+    info_y = status_y + 10
     col1_x = x + 30
     col2_x = x + w // 2 + 15
 
     testo(surf, "MOTORE", (col1_x, info_y), F_TITLE, C_ACCENT)
-    testo(surf, f"Carica: {stato['carica_motore_pct']:.0f}%", (col1_x, info_y + 24), F_LABEL, C_WHITE)
-    testo(surf, f"Autonomia: {stato['autonomia_motore']:.0f}", (col1_x, info_y + 44), F_LABEL, C_YELLOW)
+    testo(surf, f"Carica: {stato['carica_motore_pct']:.0f}%", (col1_x, info_y + 24), F_LABEL, colore_v_motor)
+    testo(surf, f"Autonomia: {stato['autonomia_motore']:.0f} min ", (col1_x, info_y + 44), F_LABEL, C_WHITE)
 
     testo(surf, "TEENSY", (col2_x, info_y), F_TITLE, C_ACCENT)
-    testo(surf, f"Carica: {stato['carica_teensy_pct']:.0f}%", (col2_x, info_y + 24), F_LABEL, C_WHITE)
-    testo(surf, f"Autonomia: {stato['autonomia_teensy']:.0f}", (col2_x, info_y + 44), F_LABEL, C_YELLOW)
+    testo(surf, f"Carica: {stato['carica_teensy_pct']:.0f}%", (col2_x, info_y + 24), F_LABEL, colore_v_teensy)
+    testo(surf, f"Autonomia: {stato['autonomia_teensy']:.0f} min ", (col2_x, info_y + 44), F_LABEL, C_WHITE)
 
 
-def draw_log_panel(surf, x, y, w, h):
-    draw_pannel(surf, x, y, w, h, "LOG")
-    testo(surf, "( qui ci metto io i messaggi di log )", (x + 20, y + 45), F_LABEL, C_DIM)
-
-
-# ================================================================
-# LAYOUT -> calcolo qui tutte le posizioni, una volta sola
-# ================================================================
 MARGIN = 18
 HEADER_H = 46
 STATUS_H = 40
@@ -568,135 +598,278 @@ PFD_CX = CENTER_X + CENTER_W // 2
 PFD_CY = TOP_Y + 40 + PFD_R
 
 
-# ================================================================
-# STATO -> valori finti (a caso), organizzati esattamente come li
-#           manda il pacchetto TELEMETRIA di main.ino. Verranno
-#           sostituiti dal parsing seriale reale in un secondo momento.
-# ================================================================
+
+SERIAL_PORT = "COM5"
+SERIAL_BAUDRATE = CONFIG["BAUD_RATE_LORA"]
+SERIAL_TIMEOUT = 0.02
+TELEMETRY_FIELDS = 70
+TELEMETRY_TIMEOUT = 2.0
+MAX_SERIAL_LINES_PER_FRAME = 24
+MAX_LOG_LINES = 10
+log_messages = []
+
+
+def aggiungi_log(messaggio):
+    timestamp = time.strftime("%H:%M:%S")
+    log_messages.append(f"[{timestamp}] {messaggio}")
+    del log_messages[:-MAX_LOG_LINES]
+
+
+def draw_log_panel(surf, x, y, w, h):
+    draw_pannel(surf, x, y, w, h, "LOG")
+    offset_x = 20
+    start_y = 45
+    line_height = 20
+
+    if not log_messages:
+        testo(surf, "( Nessun log ricevuto )", (x + offset_x, y + start_y), F_LABEL, C_DIM)
+        return
+
+    visible_lines = max(1, (h - start_y - 8) // line_height)
+    for i, msg in enumerate(log_messages[-visible_lines:]):
+        testo(surf, msg[:150], (x + offset_x, y + start_y + i * line_height), F_LABEL, C_DIM)
+
 
 def genera_stato_iniziale():
+    """Crea uno stato neutro: nessun dato viene mostrato come valido all'avvio."""
     return {
+        "seriale_ok": False,
+        "porta_seriale": SERIAL_PORT,
         # --- STATO GENERALE ---
-        "modo": "MANUALE",                # global_modalitaVolo
-        "in_volo": True,                  # droneInVolo
-        "failsafe": False,                # failsafe
-        "stato_schianto_rilevato": False, # statoSchiantoRilevato
-        "ERRORE_GPS":3,
-        "gps_ok": True,                     # gpsOk
-        "imu_pronto": True,               # imuPronto
-        "flusso_ottico_ok": True,         # flussoOtticoOk
-        "baro_pronto": True,              # baroPronto
-        "sensori_corrente_ok": True,      # sensoriCorrenteOk
-        "imu_cal_sys": 3,                 # IMU_CAL_SYS (0-3)
-
-        "seriale_ok": True,
-        "porta_seriale": "COM5",
+        "MODALITA_VOLO": "SCONOSCIUTO",
+        "Drone_in_volo": False,
+        "failsafe": False,
+        "stato_schianto_rilevato": False,
+        "imu_pronto": False,
+        "flusso_ottico_ok": False,
+        "baro_pronto": False,
+        "sensori_corrente_ok": False,
+        "gps_ok": False,
+        "imu_cal_sys": 0,
+        "imu_cal_gyro": 0,
+        "imu_cal_accel": 0,
+        "imu_cal_mag": 0,
 
         # --- ALIMENTAZIONE ---
-        "v_motore": 22.1,                 # vMotore
-        "v_teensy": 3.9,                  # vTeensy
-        "carica_teensy_pct": 78.0,        # G_carica_rimanente_teensy_percentuale
-        "carica_motore_pct": 64.0,        # G_carica_rimanente_MOTORE_percentuale
-        "autonomia_teensy": 45.0,         # G_autonomia_teensy_residua
-        "autonomia_motore": 18.0,         # G_autonomia_motore_residua
-        "i_teensy": 0.35,                 # iTeensy
-        "i_motore": 12.4,                 # iMotore
-        "v_int_sx": 3.3, "v_int_dx": 3.3, "v_est_sx": 3.3, "v_est_dx": 3.3,
-        "servo_sicurezza": True,          # servoSicurezza
+        "v_motore": 0.0,
+        "v_teensy": 0.0,
+        "carica_teensy_pct": 0.0,
+        "carica_motore_pct": 0.0,
+        "autonomia_teensy": 0.0,
+        "autonomia_motore": 0.0,
+        "i_teensy": 0.0,
+        "i_motore": 0.0,
+        "v_int_sx": 0.0, "v_int_dx": 0.0, "v_est_sx": 0.0, "v_est_dx": 0.0,
+        "servo_sicurezza": False,
 
         # --- ASSETTO E QUOTA ---
-        "pitch": 3.0, "roll": -8.0, "yaw": 145.0,
-        "altitudine": 38.7,               # Quota operativa/fusa
-        "alt_lidar": 12.4,                # Quota LIDAR
-        "alt_baro": 38.7,                 # Quota barometro
+        "pitch": 0.0, "roll": 0.0, "yaw": 0.0,
+        "altitudine": 0.0,
+        "alt_lidar": 0.0,
+        "alt_baro": 0.0,
+        "altitudine_target": 0.0,
 
         # --- VELOCITA' ---
-        "vel_aria_kmh": 51.0,
-        "vel_suolo_gps_kmh": 49.5,
-        "vento_vel_kmh": 15.1,
-        "vento_dir": 210.0,
-        "vel_crociera_kmh": 55.0,
-        "vel_avvicinamento_kmh": 40.0,
+        "vel_aria_kmh": 0.0,
+        "vel_suolo_gps_kmh": 0.0,
+        "vento_vel_kmh": 0.0,
+        "vento_dir": 0.0,
+        "vel_crociera_kmh": 0.0,
+        "vel_avvicinamento_kmh": 0.0,
 
         # --- NAVIGAZIONE ---
-        "dist_target": 124.0,
-        "rotta_target": 87.0,
-        "roll_target": -12.0,
+        "dist_target": 0.0,
+        "rotta_target": 0.0,
+        "roll_target": 0.0,
+        "rotta_attuale_deg": 0.0,
 
         # --- INPUT RADIOCOMANDO ---
-        "rc_1": 1500, "rc_0": 1500, "rc_2": 1500,
+        "rc_1": 0, "rc_0": 0, "rc_2": 0,
 
         # --- OUTPUT PID/MIXER ---
-        "out_pitch": 2.1, "out_roll": -1.4, "out_gas_us": 1500,
+        "out_pitch": 0, "out_roll": 0, "out_gas_us": 0,
 
         # --- POSIZIONE FISICA SERVI ---
-        "deg_isx": 95, "deg_idx": 88, "deg_esx": 102, "deg_edx": 80,
+        "deg_isx": 0, "deg_idx": 0, "deg_esx": 0, "deg_edx": 0,
 
         # --- TEMPERATURE E LIMITI ---
-        "limite_termico_attivato": True,
-        "temp_motore": 42.0, "temp_fusoliera": 31.0, "temp_esterna": 24.0, "temp_esc": 38.0,
-        "gas_limite_termico_us": 2000,
+        "limite_termico_attivato": False,
+        "temp_motore": 0.0, "temp_fusoliera": 0.0, "temp_esterna": 0.0, "temp_esc": 0.0,
+        "gas_limite_termico_us": 0,
 
         # --- SATELLITI E COORDINATE GPS ---
-        "num_satelliti": 8,
-        "lat": 41.902800,
-        "lon": 12.496400,
-        "errore_rotta": 4.0,
+        "num_satelliti": 0,
+        "lat": 0.0,
+        "lon": 0.0,
+        "ERRORE_GPS": 0,
+        "errore_rotta": 0.0,
 
         # --- STATI FINALI ---
-        "alimentazione_sicurezza": True,
+        "alimentazione_sicurezza": False,
         "rele_attivato": False,
+        "motore_disabilitato_terra": False,
 
         # --- FLUSSO OTTICO ---
-        "vel_ottica_x": 1.3, "vel_ottica_y": -0.6,
+        "vel_ottica_x": 0.0, "vel_ottica_y": 0.0,
     }
 
 
-def aggiorna_stato(stato):
-    """Disattivata: i valori rimangono costanti."""
-    pass
+def azzera_stato(stato):
+    """Porta lo stato in una condizione sicura quando la telemetria scade."""
+    for key in list(stato):
+        if key == "porta_seriale":
+            continue
+        if isinstance(stato[key], bool):
+            stato[key] = False
+        elif isinstance(stato[key], str):
+            stato[key] = "SCONOSCIUTO"
+        elif isinstance(stato[key], float):
+            stato[key] = 0.0
+        elif isinstance(stato[key], int):
+            stato[key] = 0
+    stato["seriale_ok"] = False
 
 
-# ================================================================
-# MAIN
-# ================================================================
+def apri_seriale():
+    if serial is None:
+        aggiungi_log("Modulo pyserial non installato: modalità demo")
+        return None
+    try:
+        connessione = serial.Serial(SERIAL_PORT, SERIAL_BAUDRATE, timeout=SERIAL_TIMEOUT)
+        aggiungi_log(f"Seriale {SERIAL_PORT} connessa a {SERIAL_BAUDRATE} baud")
+        return connessione
+    except serial.SerialException as errore:
+        aggiungi_log(f"Seriale non disponibile: {errore}")
+        return None
+
+
+def chiudi_seriale(connessione):
+    if connessione and connessione.is_open:
+        connessione.close()
+
+
+def aggiorna_stato_da_telemetria(stato, riga_seriale):
+    if not riga_seriale or not riga_seriale.startswith("$,"):
+        aggiungi_log(f"Pacchetto telemetria non valido: {riga_seriale}")
+        return False
+
+    parti = riga_seriale.split(",")
+    if len(parti) != TELEMETRY_FIELDS:
+        aggiungi_log(f"Numero di campi nella telemetria non valido: {len(parti)}")
+        return False
+
+    try:
+        valori = {
+            "MODALITA_VOLO": parti[1],
+            "Drone_in_volo": parti[2] == "1",
+            "failsafe": parti[3] == "1",
+            "stato_schianto_rilevato": parti[4] == "1",
+            "imu_pronto": parti[5] == "1",
+            "flusso_ottico_ok": parti[6] == "1",
+            "baro_pronto": parti[7] == "1",
+            "sensori_corrente_ok": parti[8] == "1",
+            "gps_ok": parti[9] == "1",
+            "imu_cal_sys": int(parti[10]), "imu_cal_gyro": int(parti[11]),
+            "imu_cal_accel": int(parti[12]), "imu_cal_mag": int(parti[13]),
+            "v_motore": float(parti[14]), "v_teensy": float(parti[15]),
+            "carica_teensy_pct": float(parti[16]), "carica_motore_pct": float(parti[17]),
+            "autonomia_teensy": float(parti[18]), "autonomia_motore": float(parti[19]),
+            "i_teensy": float(parti[20]), "i_motore": float(parti[21]),
+            "v_int_sx": float(parti[22]), "v_int_dx": float(parti[23]),
+            "v_est_sx": float(parti[24]), "v_est_dx": float(parti[25]),
+            "servo_sicurezza": parti[26] == "1",
+            "pitch": float(parti[27]), "roll": float(parti[28]), "yaw": float(parti[29]),
+            "altitudine": float(parti[30]), "alt_lidar": float(parti[31]),
+            "alt_baro": float(parti[32]), "altitudine_target": float(parti[33]),
+            "vel_aria_kmh": float(parti[34]), "vel_suolo_gps_kmh": float(parti[35]),
+            "vento_vel_kmh": float(parti[36]), "vento_dir": float(parti[37]),
+            "vel_crociera_kmh": float(parti[38]), "vel_avvicinamento_kmh": float(parti[39]),
+            "dist_target": float(parti[40]), "rotta_target": float(parti[41]),
+            "roll_target": float(parti[42]), "rotta_attuale_deg": float(parti[43]),
+            "rc_1": int(parti[44]), "rc_0": int(parti[45]), "rc_2": int(parti[46]),
+            "out_pitch": int(parti[47]), "out_roll": int(parti[48]), "out_gas_us": int(parti[49]),
+            "deg_isx": int(parti[50]), "deg_idx": int(parti[51]),
+            "deg_esx": int(parti[52]), "deg_edx": int(parti[53]),
+            "limite_termico_attivato": parti[54] == "1",
+            "temp_motore": float(parti[55]), "temp_fusoliera": float(parti[56]),
+            "temp_esterna": float(parti[57]), "temp_esc": float(parti[58]),
+            "gas_limite_termico_us": int(parti[59]),
+            "num_satelliti": int(parti[60]), "lat": float(parti[61]), "lon": float(parti[62]),
+            "ERRORE_GPS": int(float(parti[63])), "errore_rotta": float(parti[64]),
+            "alimentazione_sicurezza": parti[65] == "1", "rele_attivato": parti[66] == "1",
+            "motore_disabilitato_terra": parti[67] == "1",
+            "vel_ottica_x": float(parti[68]), "vel_ottica_y": float(parti[69]),
+        }
+    except (ValueError, IndexError):
+        aggiungi_log(f"Errore durante l'elaborazione del pacchetto telemetria: {riga_seriale}")
+        return False
+
+    stato.update(valori)
+    stato["seriale_ok"] = True
+    stato["porta_seriale"] = SERIAL_PORT
+    return True
+
+
+def leggi_seriale(connessione, stato):
+    ultimo_pacchetto = None
+    if not connessione:
+        return ultimo_pacchetto
+
+    for _ in range(MAX_SERIAL_LINES_PER_FRAME):
+        if connessione.in_waiting <= 0:
+            break
+        linea = connessione.readline().decode("utf-8", errors="ignore").strip()
+        if linea.startswith("$,"):
+            if aggiorna_stato_da_telemetria(stato, linea):
+                ultimo_pacchetto = time.monotonic()
+            continue
+        if linea.startswith("MSG,"):
+            aggiungi_log(linea.split("MSG,", 1)[1].strip())
+    return ultimo_pacchetto
+
 
 def main():
     stato = genera_stato_iniziale()
+    connessione = apri_seriale()
+    ultimo_pacchetto = None
 
-    while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+    try:
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return
 
-        # aggiorna_stato(stato)  # Commentata per mantenere i valori fissi
-        is_pid = stato["modo"].strip().upper() != "MANUALE"
+            try:
+                ricevuto = leggi_seriale(connessione, stato)
+                if ricevuto is not None:
+                    ultimo_pacchetto = ricevuto
+                if ultimo_pacchetto and time.monotonic() - ultimo_pacchetto > TELEMETRY_TIMEOUT:
+                    azzera_stato(stato)
+                    ultimo_pacchetto = None
+                    aggiungi_log("Telemetria scaduta: stato portato in sicurezza")
+            except (OSError, getattr(serial, "SerialException", OSError)) as errore:
+                aggiungi_log(f"Errore seriale: {errore}")
+                chiudi_seriale(connessione)
+                connessione = None
+                azzera_stato(stato)
 
-        screen.fill(C_BG)
-
-        draw_header(screen, stato)
-        draw_status_strip(screen, MARGIN, HEADER_H + MARGIN // 2, W - 2 * MARGIN, STATUS_H, stato)
-
-        # Colonna sinistra
-        draw_power_panel(screen, LEFT_X, TOP_Y, LEFT_W, POWER_H, stato)
-        draw_panel_temperature(screen, LEFT_X, TOP_Y + POWER_H + MARGIN, LEFT_W, TEMP_H, stato)
-        draw_panel_attitude(screen, LEFT_X, TOP_Y + POWER_H + MARGIN + TEMP_H + MARGIN, LEFT_W, STATES_H, stato)
-
-        # Centro
-        draw_pannel(screen, CENTER_X, TOP_Y, CENTER_W, CONTENT_H, "ORIZZONTE ARTIFICIALE")
-        draw_pfd(screen, PFD_CX, PFD_CY, PFD_R, CENTER_X, CENTER_W, TOP_Y, stato, is_pid)
-
-        # Colonna destra
-        draw_servi_panel(screen, RIGHT_X, TOP_Y, RIGHT_W, SERVI_H, stato)
-        draw_battery_panel(screen, RIGHT_X, TOP_Y + SERVI_H + MARGIN, RIGHT_W, BATTERY_H, stato)
-
-        # Log inferiore
-        draw_log_panel(screen, MARGIN, BOTTOM_Y, W - 2 * MARGIN, LOG_H)
-
-        pygame.display.flip()
-        clock.tick(30)
-
+            is_pid = stato["MODALITA_VOLO"].strip().upper() != "MANUALE"
+            screen.fill(C_BG)
+            draw_header(screen, stato)
+            draw_status_strip(screen, MARGIN, HEADER_H + MARGIN // 2, W - 2 * MARGIN, STATUS_H, stato)
+            draw_power_panel(screen, LEFT_X, TOP_Y, LEFT_W, POWER_H, stato)
+            draw_panel_temperature(screen, LEFT_X, TOP_Y + POWER_H + MARGIN, LEFT_W, TEMP_H, stato)
+            draw_panel_attitude(screen, LEFT_X, TOP_Y + POWER_H + MARGIN + TEMP_H + MARGIN, LEFT_W, STATES_H, stato)
+            draw_pannel(screen, CENTER_X, TOP_Y, CENTER_W, CONTENT_H, "ORIZZONTE ARTIFICIALE")
+            draw_pfd(screen, PFD_CX, PFD_CY, PFD_R, CENTER_X, CENTER_W, TOP_Y, stato, is_pid)
+            draw_servi_panel(screen, RIGHT_X, TOP_Y, RIGHT_W, SERVI_H, stato)
+            draw_battery_panel(screen, RIGHT_X, TOP_Y + SERVI_H + MARGIN, RIGHT_W, BATTERY_H, stato)
+            draw_log_panel(screen, MARGIN, BOTTOM_Y, W - 2 * MARGIN, LOG_H)
+            pygame.display.flip()
+            clock.tick(30)
+    finally:
+        chiudi_seriale(connessione)
+        pygame.quit()
 
 if __name__ == "__main__":
     main()

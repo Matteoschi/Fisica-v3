@@ -15,7 +15,6 @@
 #define GPS_SERIAL      Serial1
 #define TELEMETRIA      Serial4
 #define BAUD_RATE_GPS   9600
-#define BAUD_RATE_LORA  57600
 #define BAUD_RATE_LIDAR 115200
 
 //  SENSORI E OGGETTI GLOBALI
@@ -377,7 +376,7 @@ void aggiornaGPS() {
 
 
 void stimaVento(float yaw_deg){
-    if (gps.course.isValid() && gps.speed.isValid() && PITOT_VALIDO && Errore_gps > 2) {
+    if ( PITOT_VALIDO && Errore_gps > 2) {
         float velocitaAriaX_ms = VELOCITA_ARIA_ms * cos(radians(yaw_deg));
         float velocitaAriaY_ms = VELOCITA_ARIA_ms * sin(radians(yaw_deg));
 
@@ -609,7 +608,7 @@ void aggiornaNavigazione(float yaw_deg) {
     unsigned long tempoAttuale_ms = millis();
     
 
-    if (gps.location.isValid()) {
+    if (Errore_gps > 0) {
         ultimoGpsValido_ms = tempoAttuale_ms;
 
         // Geometria verso il target: distanza (m) e rotta (°)
@@ -623,13 +622,13 @@ void aggiornaNavigazione(float yaw_deg) {
             return;
         }
 
-        if (rottaAttuale_deg < 0.0f || (VELOCITA_SUOLO_ms < VELOCITA_SUOLO_GPS_AFFIDABILE_ms)) {
+        if (rottaAttuale_deg < 0.0f || (VELOCITA_SUOLO_ms < VELOCITA_SUOLO_GPS_AFFIDABILE_ms)) { // fare un booleano: rotta_attuale_con_yaw 
             rottaAttuale_deg = yaw_deg;
         }
 
         float rottaCorretta_deg = ROTTA_TARGET_deg;   
 
-        if (VENTO_VELOCITA_ms > 3.0f && VELOCITA_ARIA_ms > 3.0f ) {
+        if (VENTO_VELOCITA_ms > 3.0f && VELOCITA_ARIA_ms > 3.0f ) {// fare tipo un boleano: rotta_corrtta_vento
             float deltaVento_deg = VENTO_DIREZIONE_deg - ROTTA_TARGET_deg;
             if (deltaVento_deg > 180.0f) deltaVento_deg -= 360.0f;
             if (deltaVento_deg < -180.0f) deltaVento_deg += 360.0f;
@@ -731,13 +730,13 @@ void calcolaPID(float targetAltitudine_m, float targetRoll_deg,
         gasCorrente_us = GAS_MINIMO_us;
         resettaPID();
 
-    } else if (ALTITUDINE_m > ALTITUDINE_MAX_m) {
+    } else if (ALTITUDINE_m > ALTITUDINE_MAX_m) {//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////nn ce nel latex
         // Sopra la quota massima: forza un pitch negativo (scendi) e riduce il gas al minimo
         targetPitchAuto_deg = PITCH_DOWN_FORZATO_deg;
         gasCorrente_us = GAS_MINIMO_us;
         resettaPID();
 
-    } else if (ALTITUDINE_m < ALTITUDINE_MIN_m) {
+    } else if (ALTITUDINE_m && !inStallo < ALTITUDINE_MIN_m) {
         // Sotto la quota minima: forza un pitch positivo (sali) e aumenta il gas quasi al massimo
         targetPitchAuto_deg = PITCH_UP_FORZATO_deg;
         gasCorrente_us = GAS_MASSIMO_us;
@@ -921,6 +920,7 @@ void applicaMixer4Servi(int pitch_deg, int roll_deg) {
         posIntDX_deg = CENTRO_SERVO_deg + pitch_deg - roll_deg;
     } else {
         return;   // Tutti i servi rotti: nulla da comandare
+
     }
 
     // Attach/detach automatico in base a se i servi sono considerati attivi o no
@@ -983,7 +983,7 @@ void diagnosticaServi() {
         erroriConsecutivi[0]++;
         if (erroriConsecutivi[0] > ERRORI_CONSECUTIVI_SERVO) {
             estSxOk = false;
-            inviaMessaggioAvionica("WARN: ServoEstSX anomalia corrente persistente!");
+            inviaMessaggioAvionica("WARN: ServoEstSX assunzione corrente fuori limiti per troppo tempo");
         }
     } else {
         erroriConsecutivi[0] = 0;
@@ -997,7 +997,7 @@ void diagnosticaServi() {
         erroriConsecutivi[1]++;
         if (erroriConsecutivi[1] > ERRORI_CONSECUTIVI_SERVO) {
             estDxOk = false;
-            inviaMessaggioAvionica("WARN: ServoEstDX anomalia corrente persistente!");
+            inviaMessaggioAvionica("WARN: ServoEstDX assunzione corrente fuori limiti per troppo tempo");
         }
     } else {
         erroriConsecutivi[1] = 0;
@@ -1011,7 +1011,7 @@ void diagnosticaServi() {
         erroriConsecutivi[2]++;
         if (erroriConsecutivi[2] > ERRORI_CONSECUTIVI_SERVO) {
             intSxOk = false;
-            inviaMessaggioAvionica("WARN: ServoIntSX anomalia corrente persistente!");
+            inviaMessaggioAvionica("WARN: ServoIntSX assunzione corrente fuori limiti per troppo tempo");
         }
     } else {
         erroriConsecutivi[2] = 0;
@@ -1025,7 +1025,7 @@ void diagnosticaServi() {
         erroriConsecutivi[3]++;
         if (erroriConsecutivi[3] > ERRORI_CONSECUTIVI_SERVO) {
             intDxOk = false;
-            inviaMessaggioAvionica("WARN: ServoIntDX anomalia corrente persistente!");
+            inviaMessaggioAvionica("WARN: ServoIntDX assunzione corrente fuori limiti per troppo tempo");
         }
     } else {
         erroriConsecutivi[3] = 0;
@@ -1079,7 +1079,7 @@ void gestisciAlimentazione() {
         batteriaBassaTeensy = (vTeensy < VALORE_BATT_TEENSY_BASSA_V);
         
         if (batteriaBassaTeensy && !batteriaBassaTeensyPrecedente) {
-            inviaMessaggioAvionica("ATTENZIONE: batteria Teensy bassa, commutazione su batteria motore");
+            inviaMessaggioAvionica("ATTENZIONE: batteria Teensy bassa, commutazione su batteria motore apertura relè");
         }
 
         if (batteriaBassaTeensy) {
@@ -1093,7 +1093,7 @@ void gestisciAlimentazione() {
         // Controllo Batteria Motore
         batteriaBassaMotore = (vMotore < VALORE_BATT_MOTORE_BASSA_V);
         if (batteriaBassaMotore && !batteriaBassaMotorePrecedente) {
-            inviaMessaggioAvionica("ATTENZIONE: batteria motore bassa, considerare atterraggio");
+            inviaMessaggioAvionica("ATTENZIONE: batteria motore bassa, considerare atterraggio, semo fottuti");
         }
     }
     
@@ -1138,16 +1138,16 @@ void gestisciSchianto() {
             if ((tempoAttuale_ms - tempoInizioPicco_ms) >= TEMPO_CONFERMA_SCHIANTO_ms) {
                 if (VELOCITA_ARIA_ms < SOGLIA_VELOCITA_CRITICA_ms) {
                     
-                    inviaMessaggioAvionica("CRITICAL: SCHIANTO CONFERMATO (Accelerazione + Perdita Velocita)!");
+                    inviaMessaggioAvionica("CRITICAL: SCHIANTO CONFERMATO ");
                     statoSchiantoRilevato = true;
                     schiantoBloccato = true;
-                    
+                    inviaMessaggioAvionica("CRITICAL: DISATTIVO SERVI E MOTORE");
                     motore.writeMicroseconds(GAS_NEUTRO_us);
                     servoInternoSX.detach();
                     servoInternoDX.detach();
                     servoEsternoSX.detach();
                     servoEsternoDX.detach();
-
+                    inviaMessaggioAvionica("LUCI E ALLARME ATTIVATI");
                     digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
                     digitalWrite(PIN_LED_VERDE_GPS, HIGH);
                     digitalWrite(PIN_LED_BLU_PID, HIGH);
@@ -1171,11 +1171,9 @@ void verificaDroneInVolo() {
                 TIMESTAMP_DECOLLO_ms = millis();
             }
             if (millis() - TIMESTAMP_DECOLLO_ms >= TEMPO_DECOLLO_SICURO_ms) {
+                inviaMessaggioAvionica("velocita e altitudine di decollo confermate");
                 droneInVolo = true;
                 TIMESTAMP_DECOLLO_ms = 0;
-                // FIX (obiettivo 2): il decollo è il cambio di stato più importante di tutto il volo
-                // (attiva il monitoraggio schianto, la logica gas/PID, ecc.) e prima non veniva
-                // notificato a terra in nessun modo.
                 inviaMessaggioAvionica("DECOLLO CONFERMATO: drone in volo, monitoraggio schianto attivo");
             }
         } else {
@@ -1620,22 +1618,20 @@ void setup()
     tone(PIN_BUZZER, 1200, 100); delay(150);
     tone(PIN_BUZZER, 1600, 150); delay(300);
 
-    inviaMessaggioAvionica("     SISTEMA DRONE — AVVIO IN CORSO     ");
+    
 
     ricevente.begin();
     TELEMETRIA.begin(BAUD_RATE_LORA);
     GPS_SERIAL.begin(BAUD_RATE_GPS);
     Serial2.begin(BAUD_RATE_LIDAR);
     delay(100);
-
+    inviaMessaggioAvionica("     SISTEMA DRONE — AVVIO IN CORSO     ");
     while (Serial2.available()) Serial2.read();   // Svuota eventuali byte residui nel buffer seriale del LIDAR
-
-    // INIZIALIZZAZIONE SENSORI — ciclo ripetuto fino a MAX_TENTATIVI_INIT se qualcosa non è pronto
+    inviaMessaggioAvionica("     INIZIALIZZAZIONE SENSORI — ciclo ripetuto fino a MAX_TENTATIVI_INIT   ");
     while ((!imuPronto || !baroPronto || !pitotCalibrato || !sensoriCorrenteOk || !gpsOk) && tentativiInit < MAX_TENTATIVI_INIT) {
         tentativiInit++;
         inviaMessaggioAvionica("  Tentativo ");
         inviaMessaggioAvionica(String(tentativiInit));
-
 
         // --- Flusso ottico: tentativo di inizializzazione via SPI ---
         if (!flussoOtticoOk) {
@@ -1758,17 +1754,18 @@ void setup()
                 inviaMessaggioAvionica(" ; yaw= ");
                 inviaMessaggioAvionica(String(OFFSET_YAW_deg, 2));
             } else {
-                Serial.println("\n ERRORE (cavi I2C?)");
+                inviaMessaggioAvionica("\n ERRORE (cavi I2C?)");
                 segnalaErrore();
             }
         } else {
-            Serial.println(" \n [OK] IMU BNO055");
+            inviaMessaggioAvionica(" \n [OK] IMU BNO055");
         }
 
         // 2. BAROMETRO — inizializzazione, oversampling, filtro, tara altitudine ASL
         if (!baroPronto) {
-            Serial.print("[ ] Barometro BMP390 ....... ");
+            inviaMessaggioAvionica("[ ] Barometro BMP390 ....... ");
             if (barometro.begin_I2C()) {
+                inviaMessaggioAvionica("Settaggio oversempling ....... ");
                 barometro.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
                 barometro.setPressureOversampling(BMP3_OVERSAMPLING_32X);
                 barometro.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
@@ -1783,7 +1780,7 @@ void setup()
 
                 float sommaAltitudine_m = 0.0;
                 bool erroreCalibrazione = false;
-
+                inviaMessaggioAvionica("Calibrazione barometro ....... ");
                 for (int i = 0; i < 20; i++) {   // 20 campioni per la media di tara
                     segnalaCalibrazione(PIN_LED_BLU_PID);
 
@@ -1840,6 +1837,7 @@ void setup()
         if (!pitotCalibrato) {
             inviaMessaggioAvionica("[ ] Pitot (velocita') ...... ");
             long sommaLetture_adc = 0;
+            inviaMessaggioAvionica("Calibrazione pitot ....... ");
             for (int i = 0; i < 100; i++) {   // 100 campioni
                 if (i % 10 == 0) {
                     segnalaCalibrazione(PIN_LED_VERDE_GPS);
@@ -1908,7 +1906,7 @@ void setup()
             delay(400);
         }
     }
-
+    inviaMessaggioAvionica("\n  >> Sensori inizializzati correttamente\n");
     // TUTTO OK — INIT SERVO
     inizializzaServo();    // Attacca tutti i servi e li porta al centro (90°)
     inizializzaMotore();   // Attacca l'ESC e invia comando neutro (GAS_NEUTRO_us)
@@ -1934,10 +1932,12 @@ void setup()
 
 // Collega i 4 servocomandi ai rispettivi pin e li porta tutti alla posizione centrale (90°)
 void inizializzaServo() {
+    inviaMessaggioAvionica("Inizializzazione servi in corso...");
     servoInternoSX.attach(PIN_INT_SX);
     servoInternoDX.attach(PIN_INT_DX);
     servoEsternoSX.attach(PIN_EST_SX);
     servoEsternoDX.attach(PIN_EST_DX);
+    inviaMessaggioAvionica("Servo inizializzati.Posizione neutra (90°) inviata a tutti i servi.");
     servoInternoSX.write(CENTRO_SERVO_deg);
     servoInternoDX.write(CENTRO_SERVO_deg);
     servoEsternoSX.write(CENTRO_SERVO_deg);
@@ -1946,7 +1946,9 @@ void inizializzaServo() {
 
 // Collega l'ESC del motore e invia il comando neutro
 void inizializzaMotore() {
+    inviaMessaggioAvionica("Inizializzazione motore in corso...");
     motore.attach(PIN_MOTORE);
+    inviaMessaggioAvionica("Motore inizializzato. Comando neutro inviato (GAS_NEUTRO_us).");
     motore.writeMicroseconds(GAS_NEUTRO_us);
 }
 
