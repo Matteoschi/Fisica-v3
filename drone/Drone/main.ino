@@ -191,10 +191,7 @@ int global_modalitaVolo = 1;   // Modalità di volo corrente: 1=Manuale, 2=Auto 
 float VELOCITA_CROCIERA_kmh      = 60.0f;
 float VELOCITA_AVVICINAMENTO_kmh = 45.0f;
 
-//  VARIABILI GLOBALI — PID (guadagni)
-// NOTA: rese non-const (erano "const float") per permettere la sintonizzazione da terra via CMD:SET_Kx_ASSE.
-// I limiti di sicurezza LIMITE_KP_MAX/KI_MAX/KD_MAX (sopra) erano già dichiarati ma non venivano mai usati:
-// ora vengono applicati in elaboraComando() per validare ogni guadagno ricevuto.
+
 float Kp_vel = 1.5f,   Ki_vel = 0.1f,   Kd_vel = 0.5f;
 float Kp_roll = 1.2f,  Ki_roll = 0.05f, Kd_roll = 0.5f;
 float Kp_pitch = 1.2f, Ki_pitch = 0.05f, Kd_pitch = 0.5f;
@@ -291,10 +288,6 @@ void segnalaCalibrazione(int pin_led) {
 void inviaMessaggioAvionica(const char* messaggio) {
     Serial.print("[AVIONICA] da banco: ");
     Serial.println(messaggio);
-
-    // 2. Formatta e invia alla radio LoRa. 
-    // Usiamo un prefisso "MSG:" o "TXT," in modo che il computer 
-    // capisca che non è un pacchetto dati standard.
     SERIALE_LORA.print("MSG,");
     SERIALE_LORA.println(messaggio);
 }
@@ -331,6 +324,20 @@ void aggiornaGPS() {
         else {
             Errore_gps = 1; // Scarso
         }
+    }
+
+    static int erroreGpsPrecedente = -99;
+    if (Errore_gps != erroreGpsPrecedente) {
+        if (Errore_gps == 0)      inviaMessaggioAvionica("GPS: 0 -> scollegato");
+        else if (Errore_gps == -1) inviaMessaggioAvionica("GPS: -1 -> nessun fix");
+        else if (Errore_gps == -2) inviaMessaggioAvionica("GPS: -2 -> ROTTA NON CALCOLABILE");
+        else if (Errore_gps == -3) inviaMessaggioAvionica("GPS: -3 -> zero satelliti validi");
+        else if (Errore_gps == -5) inviaMessaggioAvionica("GPS: -5 -> velocita NON calcolabile");
+        else if (Errore_gps == -6) inviaMessaggioAvionica("GPS: -6 -> dati congelati timeout > 1,5s");
+        else if (Errore_gps == 1)  inviaMessaggioAvionica("GPS: 1 -> fix scarso");
+        else if (Errore_gps == 2)  inviaMessaggioAvionica("GPS: 2 -> fix buono");
+        else if (Errore_gps == 3)  inviaMessaggioAvionica("GPS: 3 -> fix eccellente");
+        erroreGpsPrecedente = Errore_gps;
     }
 
     static bool fixValidoPrecedente = false;
@@ -376,6 +383,7 @@ void aggiornaGPS() {
 
 
 void stimaVento(float yaw_deg){
+    bool stima_vento_disponibile= false;
     if ( PITOT_VALIDO && Errore_gps > 2) {
         float velocitaAriaX_ms = VELOCITA_ARIA_ms * cos(radians(yaw_deg));
         float velocitaAriaY_ms = VELOCITA_ARIA_ms * sin(radians(yaw_deg));
@@ -388,9 +396,22 @@ void stimaVento(float yaw_deg){
         if (VENTO_DIREZIONE_deg < 0.0f) {
             VENTO_DIREZIONE_deg += 360.0f; // Normalizza a 0-360°
         }
+        stima_vento_disponibile = true;
     } else {
         VENTO_VELOCITA_ms = -1.0f;
         VENTO_DIREZIONE_deg = -1.0f;
+        stima_vento_disponibile = false;
+    }
+    static bool stimaVentoPrecedente = false;
+    static bool statoStimaInizializzato = false;
+    if (!statoStimaInizializzato || stima_vento_disponibile != stimaVentoPrecedente) {
+        if (!stima_vento_disponibile) {
+            inviaMessaggioAvionica("Stima vento non disponibile: pitot non valido o GPS non affidabile (Errore_gps=" + String(Errore_gps) + ") deve essere > 2");
+        } else {
+            inviaMessaggioAvionica("Stima vento aggiornata: Velocita=" + String(VENTO_VELOCITA_ms, 2) + " m/s, Direzione=" + String(VENTO_DIREZIONE_deg, 1) + " deg");
+        }
+        stimaVentoPrecedente = stima_vento_disponibile;
+        statoStimaInizializzato = true;
     }
 }
 
@@ -404,6 +425,18 @@ void leggiPitot() {
         VELOCITA_ARIA_ms = sqrtf((2.0f * differenza_adc * FATTORE_CONVERSIONE_PITOT_Pa) / DENSITA_ARIA_kgm3);   // v = sqrt(2*p/rho)
     } else {
         VELOCITA_ARIA_ms = -1.0f;  
+    }
+
+    static bool pitotValidoPrecedente = false;
+    static bool statoPitotInizializzato = false;
+    if (!statoPitotInizializzato || PITOT_VALIDO != pitotValidoPrecedente) {
+        if (PITOT_VALIDO) {
+            inviaMessaggioAvionica("Pitot valido: velocita aria aggiornata (" + String(VELOCITA_ARIA_ms, 2) + " m/s)");
+        } else {
+            inviaMessaggioAvionica("Pitot non valido: velocita aria non disponibile");
+        }
+        pitotValidoPrecedente = PITOT_VALIDO;
+        statoPitotInizializzato = true;
     }
 }
 
@@ -425,11 +458,19 @@ void leggiTemperatura() {
 }
 
 void aggiornaLidar() {
+    static bool lidarDisponibilePrecedente = false;
+    static bool statoLidarInizializzato = false;
+
     if (ALTITUDINE_BARO_m > ALTITUDINE_MAX_LIDAR_m) {  // Se il barometro è sopra la quota massima utile del LIDAR, non leggere più il LIDAR
         while (Serial2.available()) {
             Serial2.read();   // Svuota il buffer, scarta i dati
         }
         ALTITUDINE_LIDAR_m = -1.0f;
+        if (!statoLidarInizializzato || lidarDisponibilePrecedente) {
+            inviaMessaggioAvionica("LIDAR non disponibile: quota sopra il limite operativo");
+            lidarDisponibilePrecedente = false;
+            statoLidarInizializzato = true;
+        }
         return;
     }
 
@@ -460,6 +501,11 @@ void aggiornaLidar() {
             } else {
                 ALTITUDINE_LIDAR_m = ALPHA_LIDAR * distanza_m + (1.0f - ALPHA_LIDAR) * ALTITUDINE_LIDAR_m;
             }
+            if (!statoLidarInizializzato || !lidarDisponibilePrecedente) {
+                inviaMessaggioAvionica("LIDAR disponibile: altitudine aggiornata");
+                lidarDisponibilePrecedente = true;
+                statoLidarInizializzato = true;
+            }
             return;
         }
     }
@@ -467,6 +513,8 @@ void aggiornaLidar() {
 
 void leggiVelocitaOttica(float yaw_deg) {
     static unsigned long tempoPrecedente_ms = 0;
+    static bool velocitaOtticaDisponibilePrecedente = false;
+    static bool statoVelocitaOtticaInizializzato = false;
     int16_t dx = 0;
     int16_t dy = 0;
     flussoOttico.readMotionCount(&dx, &dy);
@@ -480,6 +528,11 @@ void leggiVelocitaOttica(float yaw_deg) {
     if (dt_s <= 0.0f || ALTITUDINE_m > ALTITUDINE_MAX_OTTICO_m) {
         VELOCITA_OTTICA_X_ms = -1.0f;   // -1 = valore non valido
         VELOCITA_OTTICA_Y_ms = -1.0f;
+        if (!statoVelocitaOtticaInizializzato || velocitaOtticaDisponibilePrecedente) {
+            inviaMessaggioAvionica("Flusso ottico non disponibile: dt non valido o quota sopra il limite operativo");
+            velocitaOtticaDisponibilePrecedente = false;
+            statoVelocitaOtticaInizializzato = true;
+        }
         return;
     }
 
@@ -489,6 +542,12 @@ void leggiVelocitaOttica(float yaw_deg) {
     float yaw_rad = radians(yaw_deg);
     VELOCITA_OTTICA_X_ms = vX_ms * cos(yaw_rad) - vY_ms * sin(yaw_rad);
     VELOCITA_OTTICA_Y_ms = vX_ms * sin(yaw_rad) + vY_ms * cos(yaw_rad);
+
+    if (!statoVelocitaOtticaInizializzato || !velocitaOtticaDisponibilePrecedente) {
+        inviaMessaggioAvionica("Flusso ottico disponibile: velocita al suolo aggiornata");
+        velocitaOtticaDisponibilePrecedente = true;
+        statoVelocitaOtticaInizializzato = true;
+    }
 }
 
 
@@ -605,11 +664,16 @@ void aggiornaVelocitaSuolo(float velocitaSuoloGps_ms) {
 //  NAVIGAZIONE GPS (guida L1) ----------------------------------------------------
 void aggiornaNavigazione(float yaw_deg) {
     static unsigned long ultimoGpsValido_ms = 0;
+    static bool waypointRaggiunto = false;
+    static bool rottaConYawPrecedente = false;
+    static bool correzioneVentoPrecedente = false;
+    static bool gpsTimeoutPrecedente = false;
     unsigned long tempoAttuale_ms = millis();
     
 
     if (Errore_gps > 0) {
         ultimoGpsValido_ms = tempoAttuale_ms;
+        gpsTimeoutPrecedente = false;
 
         // Geometria verso il target: distanza (m) e rotta (°)
         float velocitaPerCalcolo_ms = max(VELOCITA_SUOLO_ms, 1.0f);
@@ -617,18 +681,35 @@ void aggiornaNavigazione(float yaw_deg) {
         float raggioAccettazioneDinamico_m = max(RAGGIO_ACCETTAZIONE_MINIMO_m, L1_m * 0.75f);
 
         if (DISTANZA_TARGET_m <= raggioAccettazioneDinamico_m) {
-            inviaMessaggioAvionica("WAYPOINT RAGGIUNTO");
+            if (!waypointRaggiunto) {
+                inviaMessaggioAvionica("WAYPOINT RAGGIUNTO");
+                waypointRaggiunto = true;
+            }
             DISTANZA_TARGET_m = 0.0f;
             return;
+        } else {
+            waypointRaggiunto = false;
         }
 
-        if (rottaAttuale_deg < 0.0f || (VELOCITA_SUOLO_ms < VELOCITA_SUOLO_GPS_AFFIDABILE_ms)) { // fare un booleano: rotta_attuale_con_yaw 
+        bool rottaConYaw = (rottaAttuale_deg < 0.0f || VELOCITA_SUOLO_ms < VELOCITA_SUOLO_GPS_AFFIDABILE_ms);
+        if (rottaConYaw) { // fare un booleano: rotta_attuale_con_yaw
             rottaAttuale_deg = yaw_deg;
+            if (!rottaConYawPrecedente) {
+                inviaMessaggioAvionica("rotta attuale aggiornata con il yaw");
+                rottaConYawPrecedente = true;
+            }
+        } else {
+            rottaConYawPrecedente = false;
         }
 
         float rottaCorretta_deg = ROTTA_TARGET_deg;   
 
-        if (VENTO_VELOCITA_ms > 3.0f && VELOCITA_ARIA_ms > 3.0f ) {// fare tipo un boleano: rotta_corrtta_vento
+        bool correzioneVento = (VENTO_VELOCITA_ms > 3.0f && VELOCITA_ARIA_ms > 3.0f);
+        if (correzioneVento) {
+            if (!correzioneVentoPrecedente) {
+                inviaMessaggioAvionica("navigazione corretta anche con il vento)");
+                correzioneVentoPrecedente = true;
+            }
             float deltaVento_deg = VENTO_DIREZIONE_deg - ROTTA_TARGET_deg;
             if (deltaVento_deg > 180.0f) deltaVento_deg -= 360.0f;
             if (deltaVento_deg < -180.0f) deltaVento_deg += 360.0f;
@@ -641,6 +722,8 @@ void aggiornaNavigazione(float yaw_deg) {
 
             if (rottaCorretta_deg >= 360.0f) rottaCorretta_deg -= 360.0f;
             if (rottaCorretta_deg < 0.0f)    rottaCorretta_deg += 360.0f;
+        } else {
+            correzioneVentoPrecedente = false;
         }
 
         ERRORE_ROTTA_deg = rottaCorretta_deg - rottaAttuale_deg;
@@ -661,8 +744,13 @@ void aggiornaNavigazione(float yaw_deg) {
         
     } else {
         if ((tempoAttuale_ms - ultimoGpsValido_ms) > TIMEOUT_GPS_ms) {
+            if (!gpsTimeoutPrecedente) {
+                inviaMessaggioAvionica("ATTENZIONE: GPS non valido da troppo tempo, navigazione disabilitata");
+                gpsTimeoutPrecedente = true;
+            }
             ROLL_TARGET_deg = 0.0f;
-            
+        } else {
+            gpsTimeoutPrecedente = false;
         }
     }
 }
@@ -719,30 +807,54 @@ void calcolaPID(float targetAltitudine_m, float targetRoll_deg,
     // 3. PID ALTITUDINE (bypassato se in stallo/overspeed/fuori range: il pitch è dettato dal recupero)
     float targetPitchAuto_deg = 0.0f;
     int gasCorrente_us = gasDiBase_us;
+    static bool quotaMassimaPrecedente = false;
+    static bool quotaMinimaPrecedente = false;
 
     if (inStallo) {
+        if (!inStalloPrecedente) {
+            inviaMessaggioAvionica("ATTENZIONE: STALLO rilevato, pitch forzato a salire e gas al massimo PITCH_DOWN_FORZATO_deg=" + String(PITCH_DOWN_FORZATO_deg) + " GAS_MASSIMO_us=" + String(GAS_MASSIMO_us));
+        }
+        quotaMassimaPrecedente = false;
+        quotaMinimaPrecedente = false;
         targetPitchAuto_deg = PITCH_DOWN_FORZATO_deg;
         gasCorrente_us = GAS_MASSIMO_us;
         resettaPID();
 
     } else if (inOverspeed) {
+        if (!inOverspeedPrecedente) {
+            inviaMessaggioAvionica("ATTENZIONE: OVERSPEED rilevato, pitch forzato a scendere e gas al minimo PITCH_DOWN_FORZATO_deg=" + String(PITCH_DOWN_FORZATO_deg) + " GAS_MINIMO_us=" + String(GAS_MINIMO_us));
+        }
+        quotaMassimaPrecedente = false;
+        quotaMinimaPrecedente = false;
         targetPitchAuto_deg = -PITCH_DOWN_FORZATO_deg;
         gasCorrente_us = GAS_MINIMO_us;
         resettaPID();
 
-    } else if (ALTITUDINE_m > ALTITUDINE_MAX_m) {//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////nn ce nel latex
+    } else if (ALTITUDINE_m > ALTITUDINE_MAX_m) {
+        if (!quotaMassimaPrecedente) {
+            inviaMessaggioAvionica("ATTENZIONE: quota massima superata, pitch forzato a scendere e gas al minimo PITCH_DOWN_FORZATO_deg=" + String(PITCH_DOWN_FORZATO_deg) + " GAS_MINIMO_us=" + String(GAS_MINIMO_us));
+            quotaMassimaPrecedente = true;
+        }
+        quotaMinimaPrecedente = false;
         // Sopra la quota massima: forza un pitch negativo (scendi) e riduce il gas al minimo
         targetPitchAuto_deg = PITCH_DOWN_FORZATO_deg;
         gasCorrente_us = GAS_MINIMO_us;
         resettaPID();
 
     } else if (ALTITUDINE_m && !inStallo < ALTITUDINE_MIN_m) {
+        if (!quotaMinimaPrecedente) {
+            inviaMessaggioAvionica("ATTENZIONE: quota minima superata, pitch forzato a salire e gas al massimo PITCH_UP_FORZATO_deg=" + String(PITCH_UP_FORZATO_deg) + " GAS_MASSIMO_us=" + String(GAS_MASSIMO_us));
+            quotaMinimaPrecedente = true;
+        }
+        quotaMassimaPrecedente = false;
         // Sotto la quota minima: forza un pitch positivo (sali) e aumenta il gas quasi al massimo
         targetPitchAuto_deg = PITCH_UP_FORZATO_deg;
         gasCorrente_us = GAS_MASSIMO_us;
         resettaPID();
 
     } else {
+        quotaMassimaPrecedente = false;
+        quotaMinimaPrecedente = false;
         // Quota nel range ammesso, nessuna emergenza velocità: calcolo PID normale
         float erroreAltitudine_m = targetAltitudine_m - ALTITUDINE_m;
         erroreAltitudine_m = constrain(erroreAltitudine_m, -20.0f, 20.0f);   // Limitato a ±20 m
@@ -822,15 +934,25 @@ void calcolaPID(float targetAltitudine_m, float targetRoll_deg,
 
 
 int gasMaxTermico() {
+    static int statoTermicoPrecedente = -1;
+
     // 1. Taglio immediato: se la temperatura supera il limite massimo consentito
     if (TEMPERATURA_MOTORE_C >= MAX_THROTTLE_END_TEMP_C || 
         TEMPERATURA_ESC_C >= MIN_ESC_END_TEMP_C) {
+        if (statoTermicoPrecedente != 0) {
+            inviaMessaggioAvionica("ATTENZIONE: temperatura motore o ESC troppo alta, gas ridotto al minimo");
+            statoTermicoPrecedente = 0;
+        }
         return GAS_MINIMO_us;
     }
 
     // 2. Zona sicura: se entrambe le temperature sono sotto la soglia di intervento
     if (TEMPERATURA_MOTORE_C <= MIN_THROTTLE_START_TEMP_C && 
         TEMPERATURA_ESC_C <= MIN_ESC_START_TEMP_C) {
+        if (statoTermicoPrecedente != 1) {
+            inviaMessaggioAvionica("Temperatura motore e ESC nella zona sicura, gas massimo consentito");
+            statoTermicoPrecedente = 1;
+        }
         return GAS_MASSIMO_us;
     }
 
@@ -860,8 +982,16 @@ int gasMaxTermico() {
     }
     float fattoreInterpolazione = 0.0f;
     if (fattoreMotore > fattoreESC) {
+        if (statoTermicoPrecedente != 2) {
+            inviaMessaggioAvionica("ATTENZIONE: temperatura motore troppo alta, gas ridotto");
+            statoTermicoPrecedente = 2;
+        }
         fattoreInterpolazione = fattoreMotore;
     } else {
+        if (statoTermicoPrecedente != 3) {
+            inviaMessaggioAvionica("ATTENZIONE: temperatura ESC troppo alta, gas ridotto");
+            statoTermicoPrecedente = 3;
+        }
         fattoreInterpolazione = fattoreESC;
     }
 
@@ -890,6 +1020,7 @@ void resettaPID() {
 //  FUNZIONI DI CONTROLLO
 
 void applicaMixer4Servi(int pitch_deg, int roll_deg) {
+    static int casoMixerPrecedente = -1;
     int posIntSX_deg = CENTRO_SERVO_deg;
     int posIntDX_deg = CENTRO_SERVO_deg;
     int posEstSX_deg = CENTRO_SERVO_deg;
@@ -905,22 +1036,34 @@ void applicaMixer4Servi(int pitch_deg, int roll_deg) {
     bool interniAttivi = intSxOk && intDxOk;
 
     if (esterniAttivi && interniAttivi) {
-        // Caso A: tutto OK — interni = SOLO PITCH, esterni = SOLO ROLL
+        if (casoMixerPrecedente != 0) {
+            inviaMessaggioAvionica("Caso A: tutto OK — interni = SOLO PITCH, esterni = SOLO ROLL");
+            casoMixerPrecedente = 0;
+        }
         posIntSX_deg = CENTRO_SERVO_deg + pitch_deg;
         posIntDX_deg = CENTRO_SERVO_deg + pitch_deg;
         posEstSX_deg = CENTRO_SERVO_deg + roll_deg;
         posEstDX_deg = CENTRO_SERVO_deg - roll_deg;
     } else if (esterniAttivi && !interniAttivi) {
-        // Caso B: interni rotti — esterni fanno pitch + roll
+        if (casoMixerPrecedente != 1) {
+            inviaMessaggioAvionica("Caso B: interni rotti — esterni fanno pitch + roll");
+            casoMixerPrecedente = 1;
+        }
         posEstSX_deg = CENTRO_SERVO_deg + pitch_deg + roll_deg;
         posEstDX_deg = CENTRO_SERVO_deg + pitch_deg - roll_deg;
     } else if (!esterniAttivi && interniAttivi) {
-        // Caso C: esterni rotti — interni fanno pitch + roll
+        if (casoMixerPrecedente != 2) {
+            inviaMessaggioAvionica("Caso C: esterni rotti — interni fanno pitch + roll");
+            casoMixerPrecedente = 2;
+        }
         posIntSX_deg = CENTRO_SERVO_deg + pitch_deg + roll_deg;
         posIntDX_deg = CENTRO_SERVO_deg + pitch_deg - roll_deg;
     } else {
-        return;   // Tutti i servi rotti: nulla da comandare
-
+        if (casoMixerPrecedente != 3) {
+            inviaMessaggioAvionica("Caso D: tutti i servi rotti: nulla da comandare");
+            casoMixerPrecedente = 3;
+        }
+        return;
     }
 
     // Attach/detach automatico in base a se i servi sono considerati attivi o no
@@ -1152,6 +1295,7 @@ void gestisciSchianto() {
                     digitalWrite(PIN_LED_VERDE_GPS, HIGH);
                     digitalWrite(PIN_LED_BLU_PID, HIGH);
                     tone(PIN_BUZZER, 2000);
+                    inviaMessaggioAvionica("per armare il drone: Porta il selettore del canale 5 in posizione Manuale (portandolo sotto la soglia S.BUS di 992).");
                 }
             }
         }
@@ -2005,10 +2149,19 @@ void loop()
     // 7. PREPARAZIONE DATI MOTORE — sceglie velocità target e gas di base in base alla distanza dal target
     float targetVelocita_kmh = 0.0f;
     int gasDiBase_us = 0;
+    static int fasciaTargetPrecedente = -1;
     if (DISTANZA_TARGET_m > DISTANZA_FRENATA_m) {
+        if (fasciaTargetPrecedente != 1) {
+            inviaMessaggioAvionica("Target lontano: velocita' crociera");
+            fasciaTargetPrecedente = 1;
+        }
         targetVelocita_kmh = VELOCITA_CROCIERA_kmh;
         gasDiBase_us = GAS_CROCIERA_us;
     } else {
+        if (fasciaTargetPrecedente != 0) {
+            inviaMessaggioAvionica("Target vicino: velocita' avvicinamento");
+            fasciaTargetPrecedente = 0;
+        }
         targetVelocita_kmh = VELOCITA_AVVICINAMENTO_kmh;
         gasDiBase_us = GAS_AVVICINAMENTO_us;
     }
@@ -2058,10 +2211,7 @@ void loop()
     static int modalitaPrecedente = 1;
     if (statoAttuale != modalitaPrecedente) {
         resettaPID();
-        Serial.print(">> Reset PID: modalita' ");
-        Serial.print(modalitaPrecedente);
-        Serial.print(" -> ");
-        Serial.println(statoAttuale);
+        inviaMessaggioAvionica("Cambio modalità di volo: reset PID , azzerati integrali/derivate");
         modalitaPrecedente = statoAttuale;
     }
 
@@ -2099,6 +2249,7 @@ void loop()
     // che quello automatico/PID senza toccarne la logica interna.
     if (motoreDisabilitatoDaTerra) {
         comandoGasFinale_us = GAS_NEUTRO_us;
+        inviaMessaggioAvionica("Comando STOP_MOTORE ricevuto da terra: motore disabilitato impostatoa GAS_NEUTRO_us");
     }
 
     if (statoSchiantoRilevato) {
