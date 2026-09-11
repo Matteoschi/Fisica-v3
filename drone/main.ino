@@ -660,8 +660,7 @@ void aggiornaLidar() {
                 if (G_altitudine_lidar_m < 0.0f) {
                     G_altitudine_lidar_m = distanza_m;
                 } else {
-                    G_altitudine_lidar_m = ALPHA_LIDAR * distanza_m +
-                                           (1.0f - ALPHA_LIDAR) * G_altitudine_lidar_m;
+                    G_altitudine_lidar_m = ALPHA_LIDAR * distanza_m +(1.0f - ALPHA_LIDAR) * G_altitudine_lidar_m;
                 }
             } else {
                 G_altitudine_lidar_m = -1.0f;
@@ -787,12 +786,10 @@ void selezionaAltitudine() {
     if (baroCorretto_m < ZONA_BLEND_LIDAR_START_m) {
         if (b_lidar_disponibile) altitudineCandidata_m = G_altitudine_lidar_m;
     } else if (baroCorretto_m < ZONA_BLEND_LIDAR_END_m && b_lidar_disponibile) {
-        float pesoBaro = (baroCorretto_m - ZONA_BLEND_LIDAR_START_m) /
-                         (ZONA_BLEND_LIDAR_END_m - ZONA_BLEND_LIDAR_START_m);
+        float pesoBaro = (baroCorretto_m - ZONA_BLEND_LIDAR_START_m) /(ZONA_BLEND_LIDAR_END_m - ZONA_BLEND_LIDAR_START_m);
         pesoBaro = constrain(pesoBaro, 0.0f, 1.0f);
 
-        altitudineCandidata_m = (G_altitudine_lidar_m * (1.0f - pesoBaro)) +
-                                (baroCorretto_m * pesoBaro);
+        altitudineCandidata_m = (G_altitudine_lidar_m * (1.0f - pesoBaro)) +(baroCorretto_m * pesoBaro);
     }
 
     if (b_prima_esecuzione) {
@@ -800,9 +797,7 @@ void selezionaAltitudine() {
         b_prima_esecuzione = false;
     } else {
         float variazione_m = altitudineCandidata_m - altitudinePrecedente_m;
-        variazione_m = constrain(variazione_m,
-                                 -MAX_VARIAZIONE_ALTITUDINE_PER_CICLO_m,
-                                  MAX_VARIAZIONE_ALTITUDINE_PER_CICLO_m);
+        variazione_m = constrain(variazione_m,-MAX_VARIAZIONE_ALTITUDINE_PER_CICLO_m,MAX_VARIAZIONE_ALTITUDINE_PER_CICLO_m);
         G_altitudine_m = altitudinePrecedente_m + variazione_m;
     }
 
@@ -829,8 +824,7 @@ void aggiornaVelocitaVerticale() {
     static bool b_sink_rate_precedente = false;
     B_sink_rate_eccessivo = (G_velocita_verticale_ms < SOGLIA_SINK_RATE_ms);
     if (B_sink_rate_eccessivo != b_sink_rate_precedente) {
-        inviaMessaggioAvionica(B_sink_rate_eccessivo ? "ATTENZIONE: sink rate anomalo rilevato"
-                                                      : "Sink rate rientrato nei limiti normali");
+        inviaMessaggioAvionica(B_sink_rate_eccessivo ? "ATTENZIONE: sink rate anomalo rilevato": "Sink rate rientrato nei limiti normali");
         b_sink_rate_precedente = B_sink_rate_eccessivo;
     }
 }
@@ -1263,18 +1257,14 @@ int verificaProtezioniVolo() {
     // Messaggio soltanto quando cambia lo stato.
     if (b_in_stallo != b_stallo_precedente) {
         inviaMessaggioAvionica(
-            b_in_stallo
-                ? "ATTENZIONE: STALLO / PRE-STALLO rilevato"
-                : "Stallo rientrato"
+            b_in_stallo? "ATTENZIONE: STALLO / PRE-STALLO rilevato": "Stallo rientrato"
         );
     }
 
     // Messaggio soltanto quando cambia lo stato.
     if (b_in_overspeed != b_overspeed_precedente) {
         inviaMessaggioAvionica(
-            b_in_overspeed
-                ? "ATTENZIONE: OVERSPEED rilevato"
-                : "Overspeed rientrato"
+            b_in_overspeed? "ATTENZIONE: OVERSPEED rilevato": "Overspeed rientrato"
         );
     }
 
@@ -1380,8 +1370,7 @@ int gasMaxTermico() {
 
     if (G_temperatura_motore_c > MOTORE_TEMP_DERATING_START_C) {
         if (MOTORE_TEMP_DERATING_END_C > MOTORE_TEMP_DERATING_START_C) {
-            fattoreMotore = (G_temperatura_motore_c - MOTORE_TEMP_DERATING_START_C) / 
-                            (MOTORE_TEMP_DERATING_END_C - MOTORE_TEMP_DERATING_START_C);
+            fattoreMotore = (G_temperatura_motore_c - MOTORE_TEMP_DERATING_START_C) / (MOTORE_TEMP_DERATING_END_C - MOTORE_TEMP_DERATING_START_C);
         } else {
             fattoreMotore = 1.0f;
         }
@@ -1389,8 +1378,7 @@ int gasMaxTermico() {
 
     if (G_temperatura_esc_c > ESC_TEMP_DERATING_START_C) {
         if (ESC_TEMP_DERATING_END_C > ESC_TEMP_DERATING_START_C) {
-            fattoreESC = (G_temperatura_esc_c - ESC_TEMP_DERATING_START_C) / 
-                         (ESC_TEMP_DERATING_END_C - ESC_TEMP_DERATING_START_C);
+            fattoreESC = (G_temperatura_esc_c - ESC_TEMP_DERATING_START_C) / (ESC_TEMP_DERATING_END_C - ESC_TEMP_DERATING_START_C);
         } else {
             fattoreESC = 1.0f;
         }
@@ -1555,9 +1543,7 @@ void applicaMixer4Servi() {
 }
 
 bool letturaINAValida(float tensione_V) {
-    return isfinite(tensione_V) &&
-           tensione_V >= INA219_TENSIONE_MIN_PLAUSIBILE_V &&
-           tensione_V <= INA219_TENSIONE_MAX_PLAUSIBILE_V;
+    return isfinite(tensione_V) &&tensione_V >= INA219_TENSIONE_MIN_PLAUSIBILE_V &&tensione_V <= INA219_TENSIONE_MAX_PLAUSIBILE_V;
 }
 
 void diagnosticaServi() {
@@ -1627,9 +1613,7 @@ void diagnosticaServi() {
         }
     }
 
-    B_INA219_OK = B_INA219_MOTORE_OK && B_INA219_TEENSY_OK &&
-                  B_INA219_INT_SX_OK && B_INA219_INT_DX_OK &&
-                  B_INA219_EST_SX_OK && B_INA219_EST_DX_OK;
+    B_INA219_OK = B_INA219_MOTORE_OK && B_INA219_TEENSY_OK &&B_INA219_INT_SX_OK && B_INA219_INT_DX_OK &&B_INA219_EST_SX_OK && B_INA219_EST_DX_OK;
 }
 
 
@@ -1648,12 +1632,9 @@ void gestisciAlimentazione() {
         G_corrente_teensy_ma = sensoreTeensy.getCurrent_mA();
         G_carica_consumata_teensy += G_corrente_teensy_ma * dt_ore;
 
-        G_carica_rimanente_teensy_percentuale =
-            ((CAPACITA_TEENSY_mAh - G_carica_consumata_teensy) / CAPACITA_TEENSY_mAh) * 100.0f;
+        G_carica_rimanente_teensy_percentuale =((CAPACITA_TEENSY_mAh - G_carica_consumata_teensy) / CAPACITA_TEENSY_mAh) * 100.0f;
 
-        G_autonomia_teensy_residua = G_corrente_teensy_ma > 0.0f
-            ? (CAPACITA_TEENSY_mAh - G_carica_consumata_teensy) / G_corrente_teensy_ma
-            : -1.0f;
+        G_autonomia_teensy_residua = G_corrente_teensy_ma > 0.0f? (CAPACITA_TEENSY_mAh - G_carica_consumata_teensy) / G_corrente_teensy_ma: -1.0f;
     }
 
     if (B_INA219_MOTORE_OK) {
@@ -1661,26 +1642,19 @@ void gestisciAlimentazione() {
         G_corrente_motore_ma = sensoreMotore.getCurrent_mA();
         G_carica_consumata_motore += G_corrente_motore_ma * dt_ore;
 
-        G_carica_rimanente_motore_percentuale =
-            ((CAPACITA_MOTORE_mAh - G_carica_consumata_motore) / CAPACITA_MOTORE_mAh) * 100.0f;
+        G_carica_rimanente_motore_percentuale =((CAPACITA_MOTORE_mAh - G_carica_consumata_motore) / CAPACITA_MOTORE_mAh) * 100.0f;
 
-        G_autonomia_motore_residua = G_corrente_motore_ma > 0.0f
-            ? (CAPACITA_MOTORE_mAh - G_carica_consumata_motore) / G_corrente_motore_ma
-            : -1.0f;
+        G_autonomia_motore_residua = G_corrente_motore_ma > 0.0f? (CAPACITA_MOTORE_mAh - G_carica_consumata_motore) / G_corrente_motore_ma: -1.0f;
     }
 
-    B_INA219_OK = B_INA219_MOTORE_OK && B_INA219_TEENSY_OK &&
-                  B_INA219_INT_SX_OK && B_INA219_INT_DX_OK &&
-                  B_INA219_EST_SX_OK && B_INA219_EST_DX_OK;
+    B_INA219_OK = B_INA219_MOTORE_OK && B_INA219_TEENSY_OK &&B_INA219_INT_SX_OK && B_INA219_INT_DX_OK &&B_INA219_EST_SX_OK && B_INA219_EST_DX_OK;
 
     static bool b_corrente_motore_eccessiva_precedente = false;
     B_corrente_motore_eccessiva = B_INA219_MOTORE_OK &&
         (G_corrente_motore_ma > CORRENTE_MOTORE_MAX_PLAUSIBILE_mA);
 
     if (B_corrente_motore_eccessiva != b_corrente_motore_eccessiva_precedente) {
-        inviaMessaggioAvionica(B_corrente_motore_eccessiva
-            ? "ATTENZIONE: corrente motore eccessiva rilevata"
-            : "Corrente motore rientrata nei limiti plausibili");
+        inviaMessaggioAvionica(B_corrente_motore_eccessiva? "ATTENZIONE: corrente motore eccessiva rilevata": "Corrente motore rientrata nei limiti plausibili");
         b_corrente_motore_eccessiva_precedente = B_corrente_motore_eccessiva;
     }
 
@@ -2465,9 +2439,7 @@ bool calibraIMU() {
 
     B_BNO055_OK = true;
 
-    inviaMessaggioAvionica("IMU calibrata: roll=" + String(G_offset_roll_deg, 2) +
-                           " pitch=" + String(G_offset_pitch_deg, 2) +
-                           " yaw=" + String(G_offset_yaw_deg, 2));
+    inviaMessaggioAvionica("IMU calibrata: roll=" + String(G_offset_roll_deg, 2) +" pitch=" + String(G_offset_pitch_deg, 2) +" yaw=" + String(G_offset_yaw_deg, 2));
     segnalaOK();
     return true;
 }
@@ -2604,9 +2576,7 @@ bool inizializzaINA219() {
     inviaMessaggioAvionica(String("INA219 Servo EstSX: ") + (B_INA219_EST_SX_OK ? "OK" : "ERRORE"));
     inviaMessaggioAvionica(String("INA219 Servo EstDX: ") + (B_INA219_EST_DX_OK ? "OK" : "ERRORE"));
 
-    B_INA219_OK = B_INA219_MOTORE_OK && B_INA219_TEENSY_OK &&
-                  B_INA219_INT_SX_OK && B_INA219_INT_DX_OK &&
-                  B_INA219_EST_SX_OK && B_INA219_EST_DX_OK;
+    B_INA219_OK = B_INA219_MOTORE_OK && B_INA219_TEENSY_OK &&B_INA219_INT_SX_OK && B_INA219_INT_DX_OK &&B_INA219_EST_SX_OK && B_INA219_EST_DX_OK;
 
     if (B_INA219_OK) segnalaOK();
     else segnalaErrore();
@@ -2615,22 +2585,15 @@ bool inizializzaINA219() {
 }
 
 bool sensoriCriticiOK() {
-    return B_BNO055_OK &&
-           B_BMP390_OK &&
-           B_PITOT_OK &&
-           B_INA219_OK &&
-           B_GPS_OK;
+    return B_BNO055_OK &&B_BMP390_OK &&B_PITOT_OK &&B_INA219_OK &&B_GPS_OK;
 }
 
 void setupSensori() {
     inviaMessaggioAvionica("     INIZIALIZZAZIONE SENSORI     ");
-
     G_tentativi_init = 0;
-
     while (!sensoriCriticiOK() && G_tentativi_init < MAX_TENTATIVI_INIT) {
         G_tentativi_init++;
         inviaMessaggioAvionica("Tentativo inizializzazione " + String(G_tentativi_init));
-
         if (!B_PMW3901_INIZIALIZZATO) inizializzaFlussoOttico();
         if (!B_LIDAR_OK) inizializzaLidar();
         if (!B_GPS_OK) inizializzaGPS();
@@ -2638,7 +2601,6 @@ void setupSensori() {
         if (!B_BMP390_OK) inizializzaBarometro();
         if (!B_PITOT_OK) inizializzaPitot();
         if (!B_INA219_OK) inizializzaINA219();
-
         if (!sensoriCriticiOK() && G_tentativi_init < MAX_TENTATIVI_INIT) {
             inviaMessaggioAvionica("Sensori critici mancanti. Nuovo tentativo...");
             digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
@@ -2646,18 +2608,14 @@ void setupSensori() {
             digitalWrite(PIN_LED_ROSSO_ALARM, LOW);
         }
     }
-
     bloccaAvvioSeSensoriCriticiKO();
-
     inviaMessaggioAvionica("Sensori critici inizializzati correttamente");
 }
 
 void bloccaAvvioSeSensoriCriticiKO() {
     if (sensoriCriticiOK()) return;
-
     digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
     inviaMessaggioAvionica("[FATAL ERROR] Fallimento inizializzazione hardware critico. Sistema bloccato.");
-
     while (1) {
         tone(PIN_BUZZER, 2000, 300);
         delay(400);
@@ -2673,7 +2631,6 @@ void finalizzaSetup() {
     tone(PIN_BUZZER, 800, 120);  delay(170);
     tone(PIN_BUZZER, 1200, 120); delay(170);
     tone(PIN_BUZZER, 1800, 200); delay(350);
-
     digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
     digitalWrite(PIN_LED_VERDE_GPS, HIGH);
     digitalWrite(PIN_LED_BLU_PID, HIGH);
@@ -2681,10 +2638,8 @@ void finalizzaSetup() {
     digitalWrite(PIN_LED_ROSSO_ALARM, LOW);
     digitalWrite(PIN_LED_VERDE_GPS, LOW);
     digitalWrite(PIN_LED_BLU_PID, LOW);
-
     G_tempo_pid_precedente_ms = millis();
     G_tempo_batteria_precedente_ms = millis();
-
     inviaMessaggioAvionica("SISTEMA PRONTO AL VOLO");
     delay(500);
 }
@@ -2697,15 +2652,11 @@ bool calibrazioneConsentita() {
 
 bool calibraDopoSchianto() {
     if (!calibrazioneConsentita()) return false;
-
     scriviMotore(GAS_NEUTRO_us);
-
     bool b_imu_ok = calibraIMU();
     bool b_baro_ok = calibraBarometro();
     bool b_pitot_ok = calibraPitot();
-
     resettaPID();
-
     return b_imu_ok && b_baro_ok && b_pitot_ok;
 }
 
@@ -2740,10 +2691,8 @@ void inizializzaMotore() {
 
     // Tutte le scritture fisiche del motore passano da scriviMotore().
     scriviMotore(GAS_NEUTRO_us);
-
     inviaMessaggioAvionica("Motore inizializzato al neutro");
 }
-
 
 // UNICO punto del programma che chiama motore.writeMicroseconds().
 // Se in futuro vuoi aggiungere un clamp, un log o un controllo hardware,
@@ -2918,14 +2867,11 @@ void aggiornaModalitaVoloDaRadio() {
         B_stato_schianto_rilevato = false;
         B_schianto_bloccato = false;
         B_drone_in_volo = false;
-
         inizializzaServo();
-
         noTone(PIN_BUZZER);
         tone(PIN_BUZZER, 1000, 100);
         delay(150);
         tone(PIN_BUZZER, 1500, 100);
-
         inviaMessaggioAvionica("SBLOCCO EMERGENZA ESEGUITO DA RADIO. Servi riarmati e centrati.");
         inviaMessaggioAvionica("Dopo uno schianto e' possibile eseguire CALIBRA_POST_SCHIANTO da terra.");
     }
@@ -2950,8 +2896,7 @@ void calcolaComandiVolo() {
     G_comando_gas_us = GAS_NEUTRO_us;
 
     // Stato 3 viene usato solo internamente per distinguere il failsafe.
-    int statoAttuale =
-        B_failsafe ? 3 : G_modalita_volo;
+    int statoAttuale =B_failsafe ? 3 : G_modalita_volo;
 
     // Quando cambia modalita' cancelliamo la memoria dei PID.
     static int statoPrecedente = -1;
@@ -2962,44 +2907,18 @@ void calcolaComandiVolo() {
         statoPrecedente = statoAttuale;
     }
 
-
     // ========================================================
     // VOLO MANUALE
     // ========================================================
 
     if (!B_schianto_bloccato &&
-        G_modalita_volo == 1 &&
-        !B_failsafe) {
-
+        G_modalita_volo == 1 && !B_failsafe) {
         // Gas dal radiocomando.
-        G_comando_gas_us =
-            constrain(
-                map(G_canali_rc[2],
-                    172, 1811,
-                    GAS_NEUTRO_us, GAS_MASSIMO_us),
-                GAS_NEUTRO_us,
-                GAS_MASSIMO_us
-            );
-
+        G_comando_gas_us =constrain(map(G_canali_rc[2],172, 1811,GAS_NEUTRO_us, GAS_MASSIMO_us),GAS_NEUTRO_us,GAS_MASSIMO_us);
         // Roll dal radiocomando.
-        G_comando_roll_deg =
-            constrain(
-                map(G_canali_rc[0],
-                    172, 1811,
-                    -MAX_ROLL_deg, MAX_ROLL_deg),
-                -MAX_ROLL_deg,
-                MAX_ROLL_deg
-            );
-
+        G_comando_roll_deg =constrain(map(G_canali_rc[0],172, 1811,-MAX_ROLL_deg, MAX_ROLL_deg),-MAX_ROLL_deg,MAX_ROLL_deg);
         // Pitch dal radiocomando.
-        G_comando_pitch_deg =
-            constrain(
-                map(G_canali_rc[1],
-                    172, 1811,
-                    MAX_PITCH_deg, -MAX_PITCH_deg),
-                -MAX_PITCH_deg,
-                MAX_PITCH_deg
-            );
+        G_comando_pitch_deg =constrain(map(G_canali_rc[1],172, 1811,MAX_PITCH_deg, -MAX_PITCH_deg),-MAX_PITCH_deg,MAX_PITCH_deg);
     }
 
 
@@ -3007,9 +2926,7 @@ void calcolaComandiVolo() {
     // VOLO AUTOMATICO / FAILSAFE
     // ========================================================
 
-    else if (!B_schianto_bloccato &&
-             (G_modalita_volo == 2 || B_failsafe) &&
-             (B_drone_in_volo || B_failsafe)) {
+    else if (!B_schianto_bloccato &&(G_modalita_volo == 2 || B_failsafe) &&(B_drone_in_volo || B_failsafe)) {
 
         // Prima del PID controlliamo l'inviluppo di volo.
         int protezione = verificaProtezioniVolo();
@@ -3034,8 +2951,6 @@ void calcolaComandiVolo() {
         G_comando_gas_us = GAS_NEUTRO_us;
     }
 }
-
-
 // Applica realmente i comandi a servi e motore.
 // Tutti i limiti finali vengono applicati qui, immediatamente prima dell'hardware.
 void aggiornaAttuatori() {
@@ -3067,15 +2982,9 @@ void aggiornaAttuatori() {
     } else {
         B_limitazione_termica_attiva = false;
     }
-
     // Messaggio soltanto quando la limitazione entra o esce.
     if (B_limitazione_termica_attiva != b_limitazione_precedente) {
-        inviaMessaggioAvionica(
-            B_limitazione_termica_attiva
-                ? "Limitazione termica gas ATTIVA"
-                : "Limitazione termica gas rientrata"
-        );
-
+        inviaMessaggioAvionica(B_limitazione_termica_attiva? "Limitazione termica gas ATTIVA": "Limitazione termica gas rientrata");
         b_limitazione_precedente = B_limitazione_termica_attiva;
     }
 
