@@ -10,19 +10,16 @@
 #include <Bitcraze_PMW3901.h>
 #include <math.h>
 #include "config.h"
+#include "pin.h"
 
-//  CONFIGURAZIONE SERIALI
-#define GPS_SERIAL      Serial1
-#define TELEMETRIA      Serial4
-#define BAUD_RATE_GPS   9600
-#define BAUD_RATE_LIDAR 115200
-
-//  SENSORI E OGGETTI GLOBALI
+// ============================================================
+// SENSORI E OGGETTI GLOBALI
+// ============================================================
 TinyGPSPlus       gps;
 Adafruit_BNO055   giroscopio = Adafruit_BNO055(55, 0x28, &Wire);
 Adafruit_BMP3XX   barometro;
-Bitcraze_PMW3901  flussoOttico(25);
-SBUS              ricevente(Serial7);
+Bitcraze_PMW3901  flussoOttico(PIN_PMW3901_CS);
+SBUS              ricevente(SBUS_SERIAL);
 
 Adafruit_INA219 sensoreMotore(0x40);
 Adafruit_INA219 sensoreIntSX(0x41);
@@ -31,914 +28,1337 @@ Adafruit_INA219 sensoreEstSX(0x43);
 Adafruit_INA219 sensoreEstDX(0x44);
 Adafruit_INA219 sensoreTeensy(0x45);
 
-Servo servoInternoSX;   // pitch
-Servo servoInternoDX;   // pitch
-Servo servoEsternoSX;   // pitch + roll
-Servo servoEsternoDX;   // pitch + roll
+Servo servoInternoSX;
+Servo servoInternoDX;
+Servo servoEsternoSX;
+Servo servoEsternoDX;
 Servo motore;
 
-// PIN
-const int PIN_ARIA         = A0;
-const int PIN_TEMP_MOTORE  = A12;
-const int PIN_TEMP_ESC = A6;
-const int PIN_TEMP_EST = A8;
-const int PIN_INT_SX       = 6;
-const int PIN_INT_DX       = 22;
-const int PIN_EST_SX       = 23;
-const int PIN_EST_DX       = 24;
-const int PIN_MOTORE       = 10;
-const int PIN_LED_ROSSO_ALARM = 2;   
-const int PIN_LED_VERDE_GPS   = 3;   
-const int PIN_LED_BLU_PID     = 4;   
-const int PIN_BUZZER = 33;
-const int PIN_RELE   = 20;
+// ============================================================
+// STATO SENSORI
+// B_*_INIZIALIZZATO = trovato/configurato.
+// B_*_OK            = affidabile in questo momento.
+// ============================================================
+bool B_BNO055_INIZIALIZZATO = false;
+bool B_PMW3901_INIZIALIZZATO = false;
+bool B_LIDAR_INIZIALIZZATO = false;
+bool B_BMP390_INIZIALIZZATO = false;
+bool B_PITOT_INIZIALIZZATO = false;
+bool B_INA219_INIZIALIZZATO = false;
 
-const int CENTRO_SERVO_deg  = 90;
-const int IMU_CAMPIONI_TARA = 200;
+bool B_BNO055_OK = false;
+bool B_PMW3901_OK = false;
+bool B_LIDAR_OK = false;
+bool B_BMP390_OK = false;
+bool B_PITOT_OK = false;
+bool B_INA219_OK = false;
+bool B_INA219_MOTORE_OK = false;
+bool B_INA219_TEENSY_OK = false;
+bool B_INA219_INT_SX_OK = false;
+bool B_INA219_INT_DX_OK = false;
+bool B_INA219_EST_SX_OK = false;
+bool B_INA219_EST_DX_OK = false;
+bool B_GPS_OK = false;
 
-//  COSTANTI FISICHE E DI CALIBRAZIONE SENSORI
-const float R_SPECIFIC_ARIA              = 287.05f;  // Costante specifica dell'aria secca, J/(kg*K)
-const float FATTORE_CONVERSIONE_PITOT_Pa = 3.22f;     // Da conteggi ADC a Pascal, dipende dal trasduttore usato
-const float ALPHA_LIDAR                  = 0.25f;     // Coefficiente filtro EMA sul LIDAR (0-1, più alto = più reattivo)
-const float COSTANTE_CALIBRAZIONE_OTTICA = 0.0012f;   // Costante di scala flusso ottico -> m/s
-const int   CAMPIONI_CONFERMA_SCHIANTO_ms   = 3;         // Cicli di loop consecutivi per confermare uno schianto
-const float VELOCITA_SUOLO_GPS_AFFIDABILE_ms = 3.0f;   // Velocità al suolo minima per considerare affidabile la rotta GPS (m/s)
-const unsigned long TEMPO_DECOLLO_SICURO_ms = 1500;   // ms sopra soglia velocità/altitudine prima di dichiarare "in volo"
-const int MAX_TENTATIVI_INIT = 3;
+unsigned long G_ultimo_lidar_valido_ms = 0;
+int G_tentativi_init = 0;
 
-// Limiti di validazione per i guadagni PID ricevuti da terra
-const float LIMITE_KP_MAX = 10.0f;
-const float LIMITE_KI_MAX = 2.0f;
-const float LIMITE_KD_MAX = 5.0f;
+float G_densita_aria_kgm3     = 1.225f;
+float G_pitot_zero_adc        = 0.0f;
+bool  B_pitot_disponibile          = false;
+float G_velocita_aria_ms      = 0.0f;
 
-//  VARIABILI GLOBALI — STATO INIZIALIZZAZIONE SENSORI
-bool imuPronto         = false;
-bool flussoOtticoOk    = false;
-bool lidarOk           = false;
-bool baroPronto        = false;
-bool pitotCalibrato    = false;
-bool sensoriCorrenteOk = true;   
-bool gpsOk = false;
-int  tentativiInit     = 0;
+float G_velocita_suolo_ms          = 0.0f;
+float G_velocita_ottica_x_ms       = 0.0f;
+float G_velocita_ottica_y_ms       = 0.0f;
+float G_velocita_suolo_gps_ms   = 0.0f;
+int G_errore_gps = -2;
 
-//  VARIABILI GLOBALI — ARIA / PITOT (VELOCITÀ ARIA)
+float G_altitudine_lidar_m      = -1.0f;
+float G_altitudine_baro_m       = 0.0f;
+float G_altitudine_m            = 0.0f;
+float G_tara_altitudine_baro_m  = 0.0f;
+float G_pressione_baro_pa       = 0.0f;
 
-float DENSITA_ARIA_kgm3     = 1.225f;  // kg/m^3, aggiornata da pressione+temperatura del barometro
-float PITOT_ZERO_adc        = 0.0f;    // Valore di zero calibrato del pitot, in conteggi ADC
-int   PITOT_RAW_adc         = 0;       // Ultima lettura grezza pitot, in conteggi ADC (0-1023)
-float PITOT_DIFFERENZA_adc  = 0.0f;    // Differenza tra lettura e zero, in conteggi ADC
-bool  PITOT_VALIDO          = false;   // true se la differenza è positiva (pressione dinamica misurabile)
-float VELOCITA_ARIA_ms      = 0.0f;    // Velocità relativa all'aria, dal Pitot, in m/s. NON viene mai mescolata con GPS o ottico.
+// Vertical speed / sink rate (punto 12)
+float G_velocita_verticale_ms  = 0.0f;   // positivo = salita, negativo = discesa
+bool  B_sink_rate_eccessivo    = false;
 
-//  VARIABILI GLOBALI — SUOLO / FLUSSO OTTICO (VELOCITÀ AL SUOLO)
-float VELOCITA_SUOLO_ms          = 0.0f;   // m/s — UNICA velocità al suolo realmente usata dal controllo 
-float VELOCITA_OTTICA_X_ms       = 0.0f;   // Componente X stimata dal flusso ottico, in m/s (-1 = non valida)
-float VELOCITA_OTTICA_Y_ms       = 0.0f;   // Componente Y stimata dal flusso ottico, in m/s (-1 = non valida)
-int   FLUSSO_OTTICO_DX_conteggi  = 0;      // Conteggi grezzi di movimento ottico asse X (diagnostica)
-int   FLUSSO_OTTICO_DY_conteggi  = 0;      // Conteggi grezzi di movimento ottico asse Y (diagnostica)
-float velocitaSuoloGps_ms       = 0.0f;   // Velocità al suolo stimata dal GPS, in m/s (-1 = non valida)
-int Errore_gps = -2;   // Stato del GPS: 0=nessun dato, -1=nessun fix, 3=ottimo, 2=buono, 1=scadente
-//  VARIABILI GLOBALI — ALTITUDINE
+float G_vento_velocita_ms   = 0.0f;
+float G_vento_direzione_deg = 0.0f;
 
-float ALTITUDINE_LIDAR_m      = -1.0f;  // Altitudine dal LIDAR TF-Luna, in metri (-1 = non disponibile/fuori range)
-float ALTITUDINE_BARO_m       = 0.0f;   // Altitudine dal barometro (relativa al punto di decollo), in metri
-float ALTITUDINE_m            = 0.0f;   // Altitudine effettivamente usata dal sistema, in metri
-float TARA_ALTITUDINE_BARO_m  = 0.0f;   // Offset sottratto al barometro per azzerare l'altitudine al decollo, in metri
-float PRESSIONE_BARO_Pa       = 0.0f;
+float G_temperatura_motore_c = 0.0f;
+float G_temperatura_fusoliera_c   = 0.0f;   
+float G_temperatura_esc_c=0.0f;
+float G_temperatura_esterna_c = 0.0f;
 
-// VENTO STIMATO
-float VENTO_VELOCITA_ms   = 0.0f;   // Modulo del vento stimato, in m/s
-float VENTO_DIREZIONE_deg = 0.0f;   // Direzione DA CUI soffia il vento, in gradi (0=Nord)
+double G_target_lat_deg       = TARGET_LAT_DEFAULT_deg;
+double G_target_lon_deg       = TARGET_LON_DEFAULT_deg;
+double G_drone_lat_deg       = 41.902782;
+double G_drone_lon_deg       = 12.496366;
+int G_numero_satelliti=   0;
+float  G_altitudine_target_m  = ALTITUDINE_TARGET_DEFAULT_m;
 
-//  VARIABILI GLOBALI — TEMPERATURE
-float TEMPERATURA_MOTORE_C = 0.0f;
-float TEMPERATURA_FUSOLIERA_C   = 0.0f;   
-float TEMPERATURA_ESC_C=0.0f;
-float TEMPERATURA_ESTERNA_C = 0.0f;
+float G_roll_target_deg    = 0.0f;
+float G_rotta_attuale_deg = 0.0f;
+float G_distanza_target_m  = 0.0f;
+float G_rotta_target_deg   = 0.0f;
+float G_errore_rotta_deg   = 0.0f;
 
-//  VARIABILI GLOBALI — NAVIGAZIONE
-double TARGET_LAT_deg       = 41.902782;
-double TARGET_LON_deg       = 12.496366;
-double DRONE_LAT_deg       = 41.902782;
-double DRONE_LON_deg       = 12.496366;
-int numero_satelliti=   0;
-float  ALTITUDINE_TARGET_m  = 40.0f;
+float G_offset_roll_deg  = 0.0f;
+float G_offset_pitch_deg = 0.0f;
+float G_offset_yaw_deg   = 0.0f;
 
-float ROLL_TARGET_deg    = 0.0f;   // Target di rollio calcolato dalla guida L1
-float rottaAttuale_deg = 0.0f;   // Rotta attuale stimata dal GPS, in gradi (0=Nord/90=Est/180=Sud/270=Ovest)
-float DISTANZA_TARGET_m  = 0.0f;
-float ROTTA_TARGET_deg   = 0.0f;   // Rotta (bearing) verso il target, 0=Nord/90=Est/180=Sud/270=Ovest
-float ERRORE_ROTTA_deg   = 0.0f;   // Rotta target - rotta attuale, normalizzata in ±180°
+uint8_t G_imu_cal_sys = 0, G_imu_cal_gyro = 0, G_imu_cal_accel = 0, G_imu_cal_mag = 0;
 
-//  VARIABILI GLOBALI — IMU
-float OFFSET_ROLL_deg  = 0.0f;
-float OFFSET_PITCH_deg = 0.0f;
-float OFFSET_YAW_deg   = 0.0f;
+bool B_alimentazione_sicurezza = true;   
+bool B_batteria_bassa_motore    = false;
+bool B_batteria_bassa_teensy    = false;
+bool B_rele_attivato           = false;
 
-float ACCEL_X_ms2 = 0.0f, ACCEL_Y_ms2 = 0.0f, ACCEL_Z_ms2 = 0.0f, ACCEL_TOTALE_ms2 = 0.0f;
-float GYRO_X_degs = 0.0f, GYRO_Y_degs = 0.0f, GYRO_Z_degs = 0.0f;   // gradi/secondo (°/s)
-uint8_t IMU_CAL_SYS = 0, IMU_CAL_GYRO = 0, IMU_CAL_ACCEL = 0, IMU_CAL_MAG = 0;   // 0-3
-
-//  VARIABILI GLOBALI — ALIMENTAZIONE / CORRENTI
-bool alimentazioneSicurezza = true;   
-bool batteriaBassaMotore    = false;
-bool batteriaBassaTeensy    = false;
-bool releAttivato           = false;
-
-unsigned long TEMPO_BATTERIA_PRECEDENTE_ms = 0;   // Riferimento temporale per l'integrazione di carica/autonomia
+unsigned long G_tempo_batteria_precedente_ms = 0;
 
 float G_carica_consumata_teensy = 0.0;
 float G_carica_consumata_motore = 0.0;
 float G_carica_rimanente_teensy_percentuale=0.0;
-float G_carica_rimanente_MOTORE_percentuale=0.0;
+float G_carica_rimanente_motore_percentuale=0.0;
 float G_autonomia_teensy_residua = 0.0;
 float G_autonomia_motore_residua=0.0;
 
-float iTeensy = 0.0;
-float iMotore =0.0;
-float vTeensy=0.0;
-float vMotore = 0.0;
+float G_corrente_teensy_ma = 0.0;
+float G_corrente_motore_ma =0.0;
+float G_tensione_teensy_v=0.0;
+float G_tensione_motore_v = 0.0;
 
-float CORRENTE_SERVO_INT_SX_mA = 0.0f;
-float CORRENTE_SERVO_INT_DX_mA = 0.0f;
-float CORRENTE_SERVO_EST_SX_mA = 0.0f;
-float CORRENTE_SERVO_EST_DX_mA = 0.0f;
+// Corrente motore (punto 13)
+bool B_corrente_motore_eccessiva = false;
 
-//  VARIABILI GLOBALI — MOTORE / GAS (microsecondi, us)
 
-int  GAS_LIMITE_TERMICO_us       = GAS_MASSIMO_us;
-bool limitazioneTermicaAttiva    = false;
-bool limitazione_termica_gas        = true;   
-bool motoreDisabilitatoDaTerra   = false;   // Kill switch software: se true il motore viene forzato al neutro ogni ciclo, indipendentemente dalla modalità
+float G_tensione_servo_int_sx_v = 0.0f;
+float G_tensione_servo_int_dx_v = 0.0f;
+float G_tensione_servo_est_sx_v = 0.0f;
+float G_tensione_servo_est_dx_v = 0.0f;
 
-//  VARIABILI GLOBALI — SERVI E SICUREZZA
-bool servoSicurezza          = true;   // Abilita/disabilita la diagnostica di sicurezza sui servi
-bool statoPrecedenteInterni  = true;
-bool statoPrecedenteEsterni  = true;
-bool estSxOk = true, estDxOk = true;
-bool intSxOk = true, intDxOk = true;
-bool errore_critico_inizializzazione= false;
+int  G_gas_limite_termico_us       = GAS_MASSIMO_us;
+bool B_limitazione_termica_attiva    = false;
+bool B_limitazione_termica_abilitata        = true;   
+bool B_motore_disabilitato_da_terra   = false;
 
-bool schiantoSicurezza      = true;  
-bool statoSchiantoRilevato  = false;
-bool schiantoBloccato       = false;
-bool droneInVolo            = false;
-int  contatoreImpatto       = 0;
+bool B_servo_sicurezza          = true;
+// Stato di attach/detach per singolo servo (punto 7): permette di lasciare
+// attaccato un servo ancora funzionante anche se il "compagno" di coppia e'
+// guasto, invece di staccare l'intera coppia.
+bool B_SERVO_EST_SX_OK = true, B_SERVO_EST_DX_OK = true;
+bool B_SERVO_INT_SX_OK = true, B_SERVO_INT_DX_OK = true;
+
+bool B_schianto_sicurezza      = true;  
+bool B_stato_schianto_rilevato  = false;
+bool B_schianto_bloccato       = false;
+bool B_drone_in_volo            = false;
 unsigned long TIMESTAMP_DECOLLO_ms = 0;
 
-int global_modalitaVolo = 1;   // Modalità di volo corrente: 1=Manuale, 2=Auto (3=Failsafe gestito a parte)
+int G_modalita_volo = 1;
 
-float VELOCITA_CROCIERA_kmh      = 60.0f;
-float VELOCITA_AVVICINAMENTO_kmh = 45.0f;
+// ============================================================
+// STATO CORRENTE DEL CONTROLLO
+// Queste variabili sono globali solo perche' servono a piu' funzioni.
+// Tutti i calcoli temporanei restano invece locali dentro le funzioni.
+// In questo modo loop(), telemetria e attuatori non devono passarsi
+// continuamente gli stessi 6-7 parametri.
+// ============================================================
+float G_pitch_deg = 0.0f;
+float G_roll_deg  = 0.0f;
+float G_yaw_deg   = 0.0f;
 
+float G_target_velocita_kmh = 0.0f;
+int   G_gas_base_us = GAS_NEUTRO_us;
 
-float Kp_vel = 1.5f,   Ki_vel = 0.1f,   Kd_vel = 0.5f;
-float Kp_roll = 1.2f,  Ki_roll = 0.05f, Kd_roll = 0.5f;
-float Kp_pitch = 1.2f, Ki_pitch = 0.05f, Kd_pitch = 0.5f;
-float Kp_alt = 0.5f,   Ki_alt = 0.05f,  Kd_alt = 0.2f;
+int G_comando_pitch_deg = 0;
+int G_comando_roll_deg  = 0;
+int G_comando_gas_us    = GAS_NEUTRO_us;
 
-unsigned long TEMPO_PID_PRECEDENTE_ms = 0;
+// Codici semplici usati da verificaProtezioniVolo().
+// Non sono soglie modificabili: servono solo per rendere leggibile il codice.
+const int PROTEZIONE_NESSUNA       = 0;
+const int PROTEZIONE_STALLO        = 1;
+const int PROTEZIONE_OVERSPEED     = 2;
+const int PROTEZIONE_QUOTA_MASSIMA = 3;
+const int PROTEZIONE_QUOTA_MINIMA  = 4;
 
-// --- Stato integrale/derivativo dei 4 PID ---
-float PID_ALT_INTEGRALE = 0.0f,   PID_ALT_ERRORE_PRECEDENTE_m   = 0.0f;
-float PID_PITCH_INTEGRALE = 0.0f, PID_PITCH_ERRORE_PRECEDENTE_deg = 0.0f;
-float PID_ROLL_INTEGRALE = 0.0f,  PID_ROLL_ERRORE_PRECEDENTE_deg  = 0.0f;
-float PID_VEL_INTEGRALE = 0.0f,   PID_VEL_ERRORE_PRECEDENTE_kmh   = 0.0f;
-
-// --- Diagnostica PID (salvata ad ogni ciclo calcolaPID, per telemetria TEL3) ---
-float PID_ALT_ERRORE_m = 0, PID_ALT_P = 0, PID_ALT_I = 0, PID_ALT_D = 0;
-float PID_PITCH_TARGET_AUTO_deg = 0;
-float PID_PITCH_ERRORE_deg = 0, PID_PITCH_P = 0, PID_PITCH_I = 0, PID_PITCH_D = 0;
-float PID_ROLL_ERRORE_deg = 0,  PID_ROLL_P = 0,  PID_ROLL_I = 0,  PID_ROLL_D = 0;
-float PID_VEL_ERRORE_kmh = 0,   PID_VEL_P = 0,   PID_VEL_I = 0,   PID_VEL_D = 0;
-float VELOCITA_TARGET_ATTUALE_kmh = 0.0f;
-
-//  VARIABILI GLOBALI — RICEVENTE RC / TELEMETRIA / COMANDI
-uint16_t canaliRC[16];
-bool failsafe      = false;
-bool pacchettoPerso = false;
-
-bool forzaInvioDiagnostica             = false;
+float G_velocita_crociera_kmh      = VELOCITA_CROCIERA_DEFAULT_kmh;
+float G_velocita_avvicinamento_kmh = VELOCITA_AVVICINAMENTO_DEFAULT_kmh;
 
 
-//  PROTOTIPI
+unsigned long G_tempo_pid_precedente_ms = 0;
+
+float G_pid_alt_integrale = 0.0f,   G_pid_alt_errore_precedente_m   = 0.0f;
+float G_pid_pitch_integrale = 0.0f, G_pid_pitch_errore_precedente_deg = 0.0f;
+float G_pid_roll_integrale = 0.0f,  G_pid_roll_errore_precedente_deg  = 0.0f;
+float G_pid_vel_integrale = 0.0f,   G_pid_vel_errore_precedente_kmh   = 0.0f;
+
+
+uint16_t G_canali_rc[16];
+bool B_failsafe      = false;
+
+bool B_forza_invio_diagnostica             = false;
+
+// ============================================================
+// PROTOTIPI - organizzati per responsabilita'
+// ============================================================
+
+// Segnalazioni / comunicazione
 void segnalaOK();
 void segnalaErrore();
 void segnalaCalibrazione(int pin_led);
-void inizializzaServo();
-void inizializzaMotore();
+void inviaMessaggioAvionica(const char* messaggio);
+void inviaMessaggioAvionica(const String& messaggio);
 
+// Setup
+void setupSegnalazioni();
+void setupComunicazioni();
+void setupSensori();
+void setupAttuatori();
+void finalizzaSetup();
+bool sensoriCriticiOK();
+void bloccaAvvioSeSensoriCriticiKO();
+
+// Inizializzazione sensori
+bool inizializzaFlussoOttico();
+bool inizializzaLidar();
+bool inizializzaGPS();
+bool inizializzaIMU();
+bool inizializzaBarometro();
+bool inizializzaPitot();
+bool inizializzaINA219();
+
+// Calibrazione richiamabile
+bool calibraIMU();
+bool calibraBarometro();
+bool calibraPitot();
+bool calibraDopoSchianto();
+bool calibrazioneConsentita();
+
+// Lettura / stato sensori
+bool gpsValido();
+void leggiIMU();
 void leggiPitot();
 void leggiBarometro();
 void leggiTemperatura();
 void aggiornaLidar();
-void leggiVelocitaOttica(float yaw_deg);
+void leggiVelocitaOttica();
 void aggiornaGPS();
-void aggiornaDensitaAria(float pressione_pa, float temperatura_c);
-void selezionaAltitudine();
-void aggiornaVelocitaSuolo(float velocitaSuoloGps_ms);
-void aggiornaNavigazione(float yaw_deg);
-void calcolaPID(float targetAltitudine_m, float targetRoll_deg,
-                 float pitchReale_deg, float rollReale_deg,
-                 float velocitaAria_kmh, float targetVelocita_kmh,
-                 int gasDiBase_us,
-                 int &comandoPitchOut_deg, int &comandoRollOut_deg, int &comandoGasOut_us);
-int  gasMaxTermico();
-void resettaPID();
+void aggiornaDiagnosticaIMU();
+void aggiornaStatoSensori();
+void inviaDiagnosticaSensori();
+bool letturaINAValida(float tensione_V);
 
-void applicaMixer4Servi(int pitch_deg, int roll_deg);
+// Elaborazione dati
+void aggiornaDensitaAria();
+void selezionaAltitudine();
+void aggiornaVelocitaVerticale();
+void aggiornaVelocitaSuolo();
+void stimaVento();
+void aggiornaNavigazione();
+
+// Controllo
+float aggiornaTempoPID();
+void calcolaPIDAssetto(float targetPitch_deg, float targetRoll_deg, float dt_s);
+void calcolaPID();
+int verificaProtezioniVolo();
+void calcolaComandiProtezione(int protezione);
+int gasMaxTermico();
+void resettaPID();
+void scegliTargetVelocita();
+void aggiornaModalitaVoloDaRadio();
+void calcolaComandiVolo();
+
+// Attuatori / sicurezza
+void inizializzaServo();
+void inizializzaMotore();
+void scriviMotore(int gas_us);
+void applicaMixer4Servi();
 void diagnosticaServi();
 void gestisciAlimentazione();
 void gestisciSchianto();
 void verificaDroneInVolo();
 void gestisciAllarmi();
-void aggiornaDiagnosticaIMU();
-void stimaVento(float yaw_deg);
-void inviaTelemetria(float pitch_deg, float roll_deg, float yaw_deg,
-                      float velAria_kmh, float velSuoloGps_kmh,
-                      int outPitch_deg, int outRoll_deg, int outGas_us);
-void inviaAck(const String& campo, const String& valore);
-void inviaNack(const String& campo, const String& motivo);
+void aggiornaAttuatori();
+
+// Loop ad alto livello
+void gestisciInizioCiclo();
+void aggiornaSensori();
+
+// Telemetria / comandi
+void inviaTelemetria();
 void comandiDaTerra();
 void elaboraComando(const String& cmd);
 
-//  FUNZIONI DI SEGNALAZIONE (LED / BUZZER)
 
-// 1200 Hz per 150 ms con LED verde acceso
 void segnalaOK() {
     digitalWrite(PIN_LED_VERDE_GPS, HIGH);
-    tone(PIN_BUZZER, 1200, 150);   // 1200 Hz, 150 ms
+    tone(PIN_BUZZER, 1200, 150);
     digitalWrite(PIN_LED_VERDE_GPS, LOW);
 }
-// 400 Hz per 100 ms con LED rosso lampeggiante 3 volte
 void segnalaErrore() {
     for (int i = 0; i < 3; i++) {
         digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
-        tone(PIN_BUZZER, 400, 100);   // 400 Hz, 100 ms
+        tone(PIN_BUZZER, 400, 100);
         delay(150);
         digitalWrite(PIN_LED_ROSSO_ALARM, LOW);
         delay(100);
     }
 }
-// 1000 Hz per 30 ms con LED lampeggiante (toggle) sul pin specificato
 void segnalaCalibrazione(int pin_led) {
-    digitalWrite(pin_led, !digitalRead(pin_led));  // toggle
-    tone(PIN_BUZZER, 1000, 30);                    // Beep breve 1000 Hz, 30 ms
+    digitalWrite(pin_led, !digitalRead(pin_led));
+    tone(PIN_BUZZER, 1000, 30);
 }
 void inviaMessaggioAvionica(const char* messaggio) {
     Serial.print("[AVIONICA] da banco: ");
     Serial.println(messaggio);
-    SERIALE_LORA.print("MSG,");
-    SERIALE_LORA.println(messaggio);
+    TELEMETRIA.print("MSG,");
+    TELEMETRIA.println(messaggio);
+}
+
+void inviaMessaggioAvionica(const String& messaggio) {
+    inviaMessaggioAvionica(messaggio.c_str());
+}
+
+
+// Restituisce true quando il GPS possiede un fix utilizzabile.
+// Tutto il codice deve usare questa funzione invece di ripetere
+// continuamente "G_errore_gps > 0".
+bool gpsValido() {
+    return G_errore_gps > 0;
 }
 
 void aggiornaGPS() {
 
     if (gps.charsProcessed() < 10) {
-        Errore_gps = 0;   // Gravissimo: Hardware scollegato o Baudrate errato
+        G_errore_gps = 0;
     } 
     else if (!gps.location.isValid()) {
-        Errore_gps = -1;  // Grave: Nessun Fix di posizione
+        G_errore_gps = -1;
     } 
-    else if (gps.location.age() > 1500) {
-        Errore_gps = -6;  // Grave: Dati in ritardo/congelati (Timeout > 1.5s)
+    else if (gps.location.age() > TIMEOUT_GPS_ms) {
+        G_errore_gps = -6;
     } 
     else if (!gps.satellites.isValid() || gps.satellites.value() == 0) {
-        Errore_gps = -3;  // Anomalia: Zero satelliti validi (nonostante il fix)
+        G_errore_gps = -3;
     } 
     else if (!gps.course.isValid()) {
-        Errore_gps = -2;  // Attesa: Fix presente, ma rotta non calcolabile 
+        G_errore_gps = -2;
     } 
     else if (!gps.speed.isValid()) {
-        Errore_gps = -5;  // Attesa: Fix presente, ma velocità non calcolabile
+        G_errore_gps = -5;
     } 
     else {
         float hdop_attuale = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
 
         if (hdop_attuale < 1.5f) {
-            Errore_gps = 3; // Eccellente
+            G_errore_gps = 3;
         } 
         else if (hdop_attuale < 2.0f) {
-            Errore_gps = 2; // Buono
+            G_errore_gps = 2;
         } 
         else {
-            Errore_gps = 1; // Scarso
+            G_errore_gps = 1;
         }
     }
 
     static int erroreGpsPrecedente = -99;
-    if (Errore_gps != erroreGpsPrecedente) {
-        if (Errore_gps == 0)      inviaMessaggioAvionica("GPS: 0 -> scollegato");
-        else if (Errore_gps == -1) inviaMessaggioAvionica("GPS: -1 -> nessun fix");
-        else if (Errore_gps == -2) inviaMessaggioAvionica("GPS: -2 -> ROTTA NON CALCOLABILE");
-        else if (Errore_gps == -3) inviaMessaggioAvionica("GPS: -3 -> zero satelliti validi");
-        else if (Errore_gps == -5) inviaMessaggioAvionica("GPS: -5 -> velocita NON calcolabile");
-        else if (Errore_gps == -6) inviaMessaggioAvionica("GPS: -6 -> dati congelati timeout > 1,5s");
-        else if (Errore_gps == 1)  inviaMessaggioAvionica("GPS: 1 -> fix scarso");
-        else if (Errore_gps == 2)  inviaMessaggioAvionica("GPS: 2 -> fix buono");
-        else if (Errore_gps == 3)  inviaMessaggioAvionica("GPS: 3 -> fix eccellente");
-        erroreGpsPrecedente = Errore_gps;
+    if (G_errore_gps != erroreGpsPrecedente) {
+        if (G_errore_gps == 0)      inviaMessaggioAvionica("GPS: 0 -> scollegato");
+        else if (G_errore_gps == -1) inviaMessaggioAvionica("GPS: -1 -> nessun fix");
+        else if (G_errore_gps == -2) inviaMessaggioAvionica("GPS: -2 -> ROTTA NON CALCOLABILE");
+        else if (G_errore_gps == -3) inviaMessaggioAvionica("GPS: -3 -> zero satelliti validi");
+        else if (G_errore_gps == -5) inviaMessaggioAvionica("GPS: -5 -> velocita NON calcolabile");
+        else if (G_errore_gps == -6) inviaMessaggioAvionica("GPS: -6 -> dati congelati timeout > 1,5s");
+        else if (G_errore_gps == 1)  inviaMessaggioAvionica("GPS: 1 -> fix scarso");
+        else if (G_errore_gps == 2)  inviaMessaggioAvionica("GPS: 2 -> fix buono");
+        else if (G_errore_gps == 3)  inviaMessaggioAvionica("GPS: 3 -> fix eccellente");
+        erroreGpsPrecedente = G_errore_gps;
     }
 
-    static bool fixValidoPrecedente = false;
-    bool fixValidoAdesso = (Errore_gps > 0);
-    if (fixValidoAdesso != fixValidoPrecedente) {
-        if (fixValidoAdesso) {
+    static bool b_fix_valido_precedente = false;
+    bool b_fix_valido_adesso = gpsValido();
+    if (b_fix_valido_adesso != b_fix_valido_precedente) {
+        if (b_fix_valido_adesso) {
             inviaMessaggioAvionica("GPS: fix riacquisito, navigazione automatica affidabile");
-        } else if (droneInVolo) {
+        } else if (B_drone_in_volo) {
             inviaMessaggioAvionica("ATTENZIONE: GPS fix perso in volo!");
         }
-        fixValidoPrecedente = fixValidoAdesso;
+        b_fix_valido_precedente = b_fix_valido_adesso;
     }
 
-    // 2. AGGIORNAMENTO DELLE VARIABILI DI VOLO
-    if (Errore_gps > 0) {
-        // VOLO AUTONOMO AUTORIZZATO: Tutti i dati sono perfetti
-        DRONE_LAT_deg       = gps.location.lat();
-        DRONE_LON_deg       = gps.location.lng();
-        velocitaSuoloGps_ms = gps.speed.mps();
-        rottaAttuale_deg    = gps.course.deg();
-        numero_satelliti    = gps.satellites.value();
+    // Controlli aggiuntivi sul GPS:
+    // 1. rileviamo salti di posizione troppo grandi tra due letture;
+    // 2. rileviamo una posizione che rimane identica per troppo tempo.
+    static double latPrecedente_deg = 0.0, lonPrecedente_deg = 0.0;
+    static bool   b_precedente_disponibile = false;
+    static int    cicliPosizioneUguale = 0;
+    static bool   b_gps_salto_precedente = false;
+    static bool   b_gps_congelato_precedente = false;
 
-        DISTANZA_TARGET_m = TinyGPSPlus::distanceBetween(
-            DRONE_LAT_deg, DRONE_LON_deg, TARGET_LAT_deg, TARGET_LON_deg
+    if (gpsValido()) {
+        G_drone_lat_deg       = gps.location.lat();
+        G_drone_lon_deg       = gps.location.lng();
+        G_velocita_suolo_gps_ms = gps.speed.mps();
+        G_rotta_attuale_deg    = gps.course.deg();
+        G_numero_satelliti    = gps.satellites.value();
+
+        G_distanza_target_m = TinyGPSPlus::distanceBetween(
+            G_drone_lat_deg, G_drone_lon_deg, G_target_lat_deg, G_target_lon_deg
         );
-        ROTTA_TARGET_deg = TinyGPSPlus::courseTo(
-            DRONE_LAT_deg, DRONE_LON_deg, TARGET_LAT_deg, TARGET_LON_deg
+        G_rotta_target_deg = TinyGPSPlus::courseTo(
+            G_drone_lat_deg, G_drone_lon_deg, G_target_lat_deg, G_target_lon_deg
         );
-    } 
-    else {
-       
-        DRONE_LAT_deg       = gps.location.isValid() ? gps.location.lat() : -1.0f;
-        DRONE_LON_deg       = gps.location.isValid() ? gps.location.lng() : -1.0f;
-        velocitaSuoloGps_ms = gps.speed.isValid()    ? gps.speed.mps()    : -1.0f;
-        rottaAttuale_deg    = gps.course.isValid()   ? gps.course.deg()   : -1.0f;
-        numero_satelliti    = gps.satellites.isValid() ? gps.satellites.value() : 0;
+
+        if (b_precedente_disponibile) {
+            float saltoDistanza_m = TinyGPSPlus::distanceBetween(
+                latPrecedente_deg, lonPrecedente_deg, G_drone_lat_deg, G_drone_lon_deg
+            );
+            bool b_gps_salto = (saltoDistanza_m > SALTO_GPS_MAX_m);
+            if (b_gps_salto != b_gps_salto_precedente) {
+                if (b_gps_salto) inviaMessaggioAvionica("ATTENZIONE: salto GPS irrealistico tra due letture consecutive");
+                b_gps_salto_precedente = b_gps_salto;
+            }
+
+            bool b_posizione_uguale = (fabs(G_drone_lat_deg - latPrecedente_deg) < 1e-7 &&
+                                        fabs(G_drone_lon_deg - lonPrecedente_deg) < 1e-7);
+            cicliPosizioneUguale = b_posizione_uguale ? (cicliPosizioneUguale + 1) : 0;
+
+            bool b_gps_congelato = (cicliPosizioneUguale > CICLI_GPS_CONGELATO_MAX);
+            if (b_gps_congelato != b_gps_congelato_precedente) {
+                if (b_gps_congelato) inviaMessaggioAvionica("ATTENZIONE: posizione GPS apparentemente congelata nonostante fix valido");
+                b_gps_congelato_precedente = b_gps_congelato;
+            }
+        }
+        latPrecedente_deg = G_drone_lat_deg;
+        lonPrecedente_deg = G_drone_lon_deg;
+        b_precedente_disponibile = true;
+    } else {
+        G_drone_lat_deg       = gps.location.isValid() ? gps.location.lat() : -1.0f;
+        G_drone_lon_deg       = gps.location.isValid() ? gps.location.lng() : -1.0f;
+        G_velocita_suolo_gps_ms = gps.speed.isValid()    ? gps.speed.mps()    : -1.0f;
+        G_rotta_attuale_deg    = gps.course.isValid()   ? gps.course.deg()   : -1.0f;
+        G_numero_satelliti    = gps.satellites.isValid() ? gps.satellites.value() : 0;
         
-        // Disattiviamo la navigazione target
-        DISTANZA_TARGET_m   = -1.0f;
-        ROTTA_TARGET_deg    = -1.0f;
+        G_distanza_target_m   = -1.0f;
+        G_rotta_target_deg    = -1.0f;
+    }
+
+    // B_GPS_OK rappresenta lo stato del GPS ADESSO, non soltanto al boot.
+    B_GPS_OK = gpsValido();
+}
+
+
+// Stima il vento confrontando il vettore airspeed con il vettore ground speed.
+// Richiede Pitot valido e GPS di qualita' eccellente (G_errore_gps == 3).
+void stimaVento() {
+    // Per questa stima non basta un fix GPS qualsiasi:
+    // manteniamo il requisito originale G_errore_gps > 2.
+    bool b_stima_disponibile =
+        B_pitot_disponibile &&
+        G_errore_gps > 2;
+
+    if (!b_stima_disponibile) {
+        G_vento_velocita_ms = -1.0f;
+        G_vento_direzione_deg = -1.0f;
+        return;
+    }
+
+    // Componenti della velocita' dell'aria.
+    float velocitaAriaX_ms =
+        G_velocita_aria_ms * cos(radians(G_yaw_deg));
+
+    float velocitaAriaY_ms =
+        G_velocita_aria_ms * sin(radians(G_yaw_deg));
+
+    // Componenti della velocita' rispetto al terreno misurata dal GPS.
+    float velocitaSuoloX_ms =
+        G_velocita_suolo_ms * cos(radians(G_rotta_attuale_deg));
+
+    float velocitaSuoloY_ms =
+        G_velocita_suolo_ms * sin(radians(G_rotta_attuale_deg));
+
+    // Vento = velocita' suolo - velocita' aria.
+    float ventoX_ms = velocitaSuoloX_ms - velocitaAriaX_ms;
+    float ventoY_ms = velocitaSuoloY_ms - velocitaAriaY_ms;
+
+    // Modulo del vento.
+    G_vento_velocita_ms =
+        sqrtf(ventoX_ms * ventoX_ms + ventoY_ms * ventoY_ms);
+
+    // Direzione del vento.
+    G_vento_direzione_deg =
+        degrees(atan2(ventoY_ms, ventoX_ms));
+
+    // Portiamo anche la direzione del vento nel range 0...360.
+    if (G_vento_direzione_deg < 0.0f) {
+        G_vento_direzione_deg += 360.0f;
+    }
+}
+
+// Legge l'assetto dall'IMU.
+// Se la lettura e' valida aggiorna G_pitch_deg, G_roll_deg e G_yaw_deg.
+// Se la lettura e' sbagliata lascia gli ultimi valori validi: in questo modo
+// un NaN non arriva mai direttamente al controllo di volo.
+void leggiIMU() {
+    // Chiediamo al BNO055 l'orientamento corrente.
+    sensors_event_t event;
+    giroscopio.getEvent(&event);
+
+    // Correggiamo pitch e roll con la tara fatta durante la calibrazione.
+    float nuovoPitch_deg = event.orientation.y - G_offset_pitch_deg;
+    float nuovoRoll_deg  = event.orientation.z - G_offset_roll_deg;
+
+    // Lo yaw viene letto direttamente come direzione 0...360 gradi.
+    float nuovoYaw_deg = event.orientation.x;
+
+    // Normalizziamo lo yaw nell'intervallo 0...360.
+    if (nuovoYaw_deg < 0.0f) nuovoYaw_deg += 360.0f;
+    if (nuovoYaw_deg >= 360.0f) nuovoYaw_deg -= 360.0f;
+
+    // Leggiamo lo stato interno dell'IMU.
+    uint8_t statoSistema = 0;
+    uint8_t selfTest = 0;
+    uint8_t erroreSistema = 0;
+    giroscopio.getSystemStatus(&statoSistema, &selfTest, &erroreSistema);
+
+    // Tutti e tre gli angoli devono essere numeri reali.
+    bool b_valori_finiti =
+        isfinite(nuovoPitch_deg) &&
+        isfinite(nuovoRoll_deg) &&
+        isfinite(nuovoYaw_deg);
+
+    // Controllo molto semplice contro valori impossibili.
+    bool b_valori_plausibili =
+        fabs(nuovoPitch_deg) <= 180.0f &&
+        fabs(nuovoRoll_deg) <= 180.0f &&
+        nuovoYaw_deg >= 0.0f &&
+        nuovoYaw_deg < 360.0f;
+
+    // Il sensore e' OK solo se era stato inizializzato e la lettura e' valida.
+    B_BNO055_OK =
+        B_BNO055_INIZIALIZZATO &&
+        b_valori_finiti &&
+        b_valori_plausibili &&
+        erroreSistema == 0;
+
+    // Aggiorniamo lo stato usato dal resto del drone soltanto con dati validi.
+    if (B_BNO055_OK) {
+        G_pitch_deg = nuovoPitch_deg;
+        G_roll_deg  = nuovoRoll_deg;
+        G_yaw_deg   = nuovoYaw_deg;
     }
 }
 
 
-void stimaVento(float yaw_deg){
-    bool stima_vento_disponibile= false;
-    if ( PITOT_VALIDO && Errore_gps > 2) {
-        float velocitaAriaX_ms = VELOCITA_ARIA_ms * cos(radians(yaw_deg));
-        float velocitaAriaY_ms = VELOCITA_ARIA_ms * sin(radians(yaw_deg));
-
-        float velocitaVentoX_ms = VELOCITA_SUOLO_ms * cos(radians(gps.course.deg())) - velocitaAriaX_ms;
-        float velocitaVentoY_ms = VELOCITA_SUOLO_ms * sin(radians(gps.course.deg())) - velocitaAriaY_ms;
-
-        VENTO_VELOCITA_ms = sqrt(velocitaVentoX_ms * velocitaVentoX_ms + velocitaVentoY_ms * velocitaVentoY_ms);
-        VENTO_DIREZIONE_deg = atan2(velocitaVentoY_ms, velocitaVentoX_ms) * 180.0f / PI;
-        if (VENTO_DIREZIONE_deg < 0.0f) {
-            VENTO_DIREZIONE_deg += 360.0f; // Normalizza a 0-360°
-        }
-        stima_vento_disponibile = true;
-    } else {
-        VENTO_VELOCITA_ms = -1.0f;
-        VENTO_DIREZIONE_deg = -1.0f;
-        stima_vento_disponibile = false;
-    }
-    static bool stimaVentoPrecedente = false;
-    static bool statoStimaInizializzato = false;
-    if (!statoStimaInizializzato || stima_vento_disponibile != stimaVentoPrecedente) {
-        if (!stima_vento_disponibile) {
-            inviaMessaggioAvionica("Stima vento non disponibile: pitot non valido o GPS non affidabile (Errore_gps=" + String(Errore_gps) + ") deve essere > 2");
-        } else {
-            inviaMessaggioAvionica("Stima vento aggiornata: Velocita=" + String(VENTO_VELOCITA_ms, 2) + " m/s, Direzione=" + String(VENTO_DIREZIONE_deg, 1) + " deg");
-        }
-        stimaVentoPrecedente = stima_vento_disponibile;
-        statoStimaInizializzato = true;
-    }
-}
-
+// Legge il Pitot e calcola la velocita' dell'aria.
+// Il valore ADC rimane locale: al resto del programma interessa solo
+// se il Pitot e' affidabile e quale airspeed ha misurato.
 void leggiPitot() {
+    // Leggiamo l'ingresso analogico.
     int lettura_adc = constrain(analogRead(PIN_ARIA), 0, 1023);
-    PITOT_RAW_adc = lettura_adc;
-    float differenza_adc = (float)lettura_adc - PITOT_ZERO_adc; // sottrae tara
-    PITOT_DIFFERENZA_adc = differenza_adc;
-    PITOT_VALIDO         = (differenza_adc > 0.0f);
-    if (PITOT_VALIDO) {
-        VELOCITA_ARIA_ms = sqrtf((2.0f * differenza_adc * FATTORE_CONVERSIONE_PITOT_Pa) / DENSITA_ARIA_kgm3);   // v = sqrt(2*p/rho)
-    } else {
-        VELOCITA_ARIA_ms = -1.0f;  
-    }
 
-    static bool pitotValidoPrecedente = false;
-    static bool statoPitotInizializzato = false;
-    if (!statoPitotInizializzato || PITOT_VALIDO != pitotValidoPrecedente) {
-        if (PITOT_VALIDO) {
-            inviaMessaggioAvionica("Pitot valido: velocita aria aggiornata (" + String(VELOCITA_ARIA_ms, 2) + " m/s)");
-        } else {
-            inviaMessaggioAvionica("Pitot non valido: velocita aria non disponibile");
-        }
-        pitotValidoPrecedente = PITOT_VALIDO;
-        statoPitotInizializzato = true;
+    // Un ADC troppo vicino ai bordi puo' indicare un problema elettrico.
+    bool b_lettura_elettrica_valida =
+        lettura_adc > PITOT_ADC_MIN_VALIDO &&
+        lettura_adc < PITOT_ADC_MAX_VALIDO;
+
+    // Stato reale del sensore in questo ciclo.
+    B_PITOT_OK = B_PITOT_INIZIALIZZATO && b_lettura_elettrica_valida;
+
+    // Differenza rispetto allo zero misurato in calibrazione.
+    float differenza_adc = (float)lettura_adc - G_pitot_zero_adc;
+
+    // Il dato e' utilizzabile solo se il sensore e' OK e la pressione dinamica e' positiva.
+    B_pitot_disponibile =
+        B_PITOT_OK &&
+        differenza_adc > 0.0f &&
+        G_densita_aria_kgm3 > 0.0f;
+
+    // Se il dato e' valido calcoliamo l'airspeed.
+    if (B_pitot_disponibile) {
+        G_velocita_aria_ms =
+            sqrtf((2.0f * differenza_adc * FATTORE_CONVERSIONE_PITOT_Pa) /
+                  G_densita_aria_kgm3);
+    } else {
+        // -1 significa: velocita' aria non disponibile.
+        G_velocita_aria_ms = -1.0f;
     }
 }
 
 void leggiBarometro() {
-    ALTITUDINE_BARO_m  = barometro.readAltitude(1013.25f) - TARA_ALTITUDINE_BARO_m;
-    PRESSIONE_BARO_Pa  = barometro.pressure;
-    TEMPERATURA_FUSOLIERA_C = barometro.temperature;
+    float altitudine_m = barometro.readAltitude(PRESSIONE_RIFERIMENTO_BARO_hPa);
+    float pressione_pa = barometro.pressure;
+    float temperatura_c = barometro.temperature;
+
+    bool b_valori_validi = isfinite(altitudine_m) &&
+                           isfinite(pressione_pa) &&
+                           isfinite(temperatura_c) &&
+                           altitudine_m >= BARO_ALTITUDINE_MIN_PLAUSIBILE_m &&
+                           altitudine_m <= BARO_ALTITUDINE_MAX_PLAUSIBILE_m &&
+                           pressione_pa >= BARO_PRESSIONE_MIN_PLAUSIBILE_Pa &&
+                           pressione_pa <= BARO_PRESSIONE_MAX_PLAUSIBILE_Pa &&
+                           temperatura_c >= BARO_TEMPERATURA_MIN_PLAUSIBILE_C &&
+                           temperatura_c <= BARO_TEMPERATURA_MAX_PLAUSIBILE_C;
+
+    B_BMP390_OK = B_BMP390_INIZIALIZZATO && b_valori_validi;
+
+    if (B_BMP390_OK) {
+        G_altitudine_baro_m = altitudine_m - G_tara_altitudine_baro_m;
+        G_pressione_baro_pa = pressione_pa;
+        G_temperatura_fusoliera_c = temperatura_c;
+    }
 }
 
 void leggiTemperatura() {
-    float voltaggioSensore_motore_V = analogRead(PIN_TEMP_MOTORE) * (3.3f / 1023.0f);   // assumendo Vref 3.3V
-    TEMPERATURA_MOTORE_C = (voltaggioSensore_motore_V - 0.5f) * 100.0f;
+    float voltaggioSensore_motore_V = analogRead(PIN_TEMP_MOTORE) * (3.3f / 1023.0f);
+    G_temperatura_motore_c = (voltaggioSensore_motore_V - 0.5f) * 100.0f;
 
     float voltaggioSensore_esc_V = analogRead(PIN_TEMP_ESC) * (3.3f / 1023.0f);
-    TEMPERATURA_ESC_C = (voltaggioSensore_esc_V - 0.5f) * 100.0f;
+    G_temperatura_esc_c = (voltaggioSensore_esc_V - 0.5f) * 100.0f;
 
     float voltaggioSensore_esterno_V = analogRead(PIN_TEMP_EST) * (3.3f / 1023.0f);
-    TEMPERATURA_ESTERNA_C = (voltaggioSensore_esterno_V - 0.5f) * 100.0f;
+    G_temperatura_esterna_c = (voltaggioSensore_esterno_V - 0.5f) * 100.0f;
 }
 
 void aggiornaLidar() {
-    static bool lidarDisponibilePrecedente = false;
-    static bool statoLidarInizializzato = false;
-
-    if (ALTITUDINE_BARO_m > ALTITUDINE_MAX_LIDAR_m) {  // Se il barometro è sopra la quota massima utile del LIDAR, non leggere più il LIDAR
-        while (Serial2.available()) {
-            Serial2.read();   // Svuota il buffer, scarta i dati
-        }
-        ALTITUDINE_LIDAR_m = -1.0f;
-        if (!statoLidarInizializzato || lidarDisponibilePrecedente) {
-            inviaMessaggioAvionica("LIDAR non disponibile: quota sopra il limite operativo");
-            lidarDisponibilePrecedente = false;
-            statoLidarInizializzato = true;
-        }
-        return;
-    }
-
     static uint8_t buffer[9];
 
-    while (Serial2.available() >= 9) {
-        if (Serial2.read() == 0x59 && Serial2.peek() == 0x59) {
-            Serial2.read();
+    bool b_quota_operativa = !B_BMP390_OK ||
+                             G_altitudine_baro_m <= ALTITUDINE_MAX_LIDAR_m;
+    bool b_frame_valido = false;
+
+    while (LIDAR_SERIAL.available() >= 9) {
+        if (LIDAR_SERIAL.read() == 0x59 && LIDAR_SERIAL.peek() == 0x59) {
+            LIDAR_SERIAL.read();
             buffer[0] = 0x59;
             buffer[1] = 0x59;
+
             for (int i = 2; i < 9; i++) {
-                buffer[i] = Serial2.read();
+                buffer[i] = LIDAR_SERIAL.read();
             }
 
-            // Checksum: somma degli 8 byte precedenti deve corrispondere al 9° byte
             uint8_t checksum = 0;
-            for (int i = 0; i < 8; i++) {
-                checksum += buffer[i];
-            }
+            for (int i = 0; i < 8; i++) checksum += buffer[i];
+
             if (checksum != buffer[8]) continue;
 
             uint16_t distanza_cm = buffer[2] | ((uint16_t)buffer[3] << 8);
             float distanza_m = distanza_cm / 100.0f;
 
-            // Filtro passa-basso (EMA)
-            if (ALTITUDINE_LIDAR_m < 0.0f) {
-                ALTITUDINE_LIDAR_m = distanza_m;
+            if (!isfinite(distanza_m) || distanza_m <= 0.0f) continue;
+
+            B_LIDAR_INIZIALIZZATO = true;
+            B_LIDAR_OK = true;
+            G_ultimo_lidar_valido_ms = millis();
+            b_frame_valido = true;
+
+            if (b_quota_operativa) {
+                if (G_altitudine_lidar_m < 0.0f) {
+                    G_altitudine_lidar_m = distanza_m;
+                } else {
+                    G_altitudine_lidar_m = ALPHA_LIDAR * distanza_m +
+                                           (1.0f - ALPHA_LIDAR) * G_altitudine_lidar_m;
+                }
             } else {
-                ALTITUDINE_LIDAR_m = ALPHA_LIDAR * distanza_m + (1.0f - ALPHA_LIDAR) * ALTITUDINE_LIDAR_m;
+                G_altitudine_lidar_m = -1.0f;
             }
-            if (!statoLidarInizializzato || !lidarDisponibilePrecedente) {
-                inviaMessaggioAvionica("LIDAR disponibile: altitudine aggiornata");
-                lidarDisponibilePrecedente = true;
-                statoLidarInizializzato = true;
-            }
-            return;
+
+            break;
         }
+    }
+
+    if (!b_frame_valido &&
+        B_LIDAR_INIZIALIZZATO &&
+        (millis() - G_ultimo_lidar_valido_ms > TIMEOUT_LIDAR_DATI_ms)) {
+        B_LIDAR_OK = false;
+        G_altitudine_lidar_m = -1.0f;
+    }
+
+    if (!b_quota_operativa) {
+        G_altitudine_lidar_m = -1.0f;
     }
 }
 
-void leggiVelocitaOttica(float yaw_deg) {
+
+// Legge il PMW3901 e trasforma i conteggi in velocita' al suolo.
+// Usa direttamente G_yaw_deg per ruotare la misura nel riferimento del mondo.
+void leggiVelocitaOttica() {
+    // Tempo dell'ultima lettura, mantenuto tra una chiamata e la successiva.
     static unsigned long tempoPrecedente_ms = 0;
-    static bool velocitaOtticaDisponibilePrecedente = false;
-    static bool statoVelocitaOtticaInizializzato = false;
+
+    // Conteggi grezzi del PMW3901: servono solo qui, quindi sono locali.
     int16_t dx = 0;
     int16_t dy = 0;
     flussoOttico.readMotionCount(&dx, &dy);
-    FLUSSO_OTTICO_DX_conteggi = dx;
-    FLUSSO_OTTICO_DY_conteggi = dy;
 
+    // Calcoliamo il tempo trascorso tra due misure.
     unsigned long adesso_ms = millis();
     float dt_s = (adesso_ms - tempoPrecedente_ms) / 1000.0f;
     tempoPrecedente_ms = adesso_ms;
 
-    if (dt_s <= 0.0f || ALTITUDINE_m > ALTITUDINE_MAX_OTTICO_m) {
-        VELOCITA_OTTICA_X_ms = -1.0f;   // -1 = valore non valido
-        VELOCITA_OTTICA_Y_ms = -1.0f;
-        if (!statoVelocitaOtticaInizializzato || velocitaOtticaDisponibilePrecedente) {
-            inviaMessaggioAvionica("Flusso ottico non disponibile: dt non valido o quota sopra il limite operativo");
-            velocitaOtticaDisponibilePrecedente = false;
-            statoVelocitaOtticaInizializzato = true;
+    // La libreria non restituisce un vero errore ad ogni lettura.
+    // Per questo B_PMW3901_OK indica soprattutto che il sensore e' stato inizializzato.
+    B_PMW3901_OK = B_PMW3901_INIZIALIZZATO;
+
+    // Sopra la quota utile del sensore il dato non viene usato.
+    if (!B_PMW3901_OK || dt_s <= 0.0f || G_altitudine_m > ALTITUDINE_MAX_OTTICO_m) {
+        G_velocita_ottica_x_ms = -1.0f;
+        G_velocita_ottica_y_ms = -1.0f;
+        return;
+    }
+
+    // Convertiamo i conteggi in metri al secondo.
+    float velocitaXDrone_ms =
+        (dx * COSTANTE_CALIBRAZIONE_OTTICA * G_altitudine_m) / dt_s;
+
+    float velocitaYDrone_ms =
+        (dy * COSTANTE_CALIBRAZIONE_OTTICA * G_altitudine_m) / dt_s;
+
+    // Convertiamo lo yaw da gradi a radianti.
+    float yaw_rad = radians(G_yaw_deg);
+
+    // Ruotiamo le velocita' dal riferimento del drone al riferimento globale.
+    G_velocita_ottica_x_ms =
+        velocitaXDrone_ms * cos(yaw_rad) -
+        velocitaYDrone_ms * sin(yaw_rad);
+
+    G_velocita_ottica_y_ms =
+        velocitaXDrone_ms * sin(yaw_rad) +
+        velocitaYDrone_ms * cos(yaw_rad);
+}
+
+
+// Calcola la densita' dell'aria usando pressione e temperatura del barometro.
+// Non servono parametri perche' entrambe le misure sono gia' nello stato globale.
+void aggiornaDensitaAria() {
+    // Convertiamo i gradi Celsius in Kelvin.
+    float temperatura_K = G_temperatura_fusoliera_c + 273.15f;
+
+    // Usiamo la legge dei gas perfetti solo con valori sensati.
+    if (temperatura_K > 0.0f && G_pressione_baro_pa > 0.0f) {
+        G_densita_aria_kgm3 =
+            G_pressione_baro_pa / (R_SPECIFIC_ARIA * temperatura_K);
+    } else {
+        // Valore standard a livello del mare come fallback.
+        G_densita_aria_kgm3 = 1.225f;
+    }
+}
+
+// Sceglie la sorgente di quota piu' affidabile tra barometro e LIDAR.
+// Le soglie di blend sono definite una sola volta in config.h.
+void selezionaAltitudine() {
+    static float offsetBaro_m = 0.0f;
+    static float altitudinePrecedente_m = 0.0f;
+    static bool b_prima_esecuzione = true;
+
+    bool b_lidar_disponibile = B_LIDAR_OK && G_altitudine_lidar_m > 0.0f;
+    bool b_baro_disponibile = B_BMP390_OK;
+
+    if (!b_lidar_disponibile && !b_baro_disponibile) {
+        // Nessuna sorgente affidabile: manteniamo l'ultima quota valida.
+        return;
+    }
+
+    if (!b_baro_disponibile && b_lidar_disponibile) {
+        G_altitudine_m = G_altitudine_lidar_m;
+        altitudinePrecedente_m = G_altitudine_m;
+        b_prima_esecuzione = false;
+        return;
+    }
+
+    if (b_lidar_disponibile) {
+        float baroCorrettoPreliminare_m = G_altitudine_baro_m - offsetBaro_m;
+        if (fabs(baroCorrettoPreliminare_m - G_altitudine_lidar_m) > SOGLIA_DISCORDANZA_QUOTA_m) {
+            b_lidar_disponibile = false;
+        }
+    }
+
+    if (b_lidar_disponibile && G_altitudine_lidar_m < ZONA_BLEND_LIDAR_START_m) {
+        offsetBaro_m = G_altitudine_baro_m - G_altitudine_lidar_m;
+    }
+
+    float baroCorretto_m = G_altitudine_baro_m - offsetBaro_m;
+    float altitudineCandidata_m = baroCorretto_m;
+
+    if (baroCorretto_m < ZONA_BLEND_LIDAR_START_m) {
+        if (b_lidar_disponibile) altitudineCandidata_m = G_altitudine_lidar_m;
+    } else if (baroCorretto_m < ZONA_BLEND_LIDAR_END_m && b_lidar_disponibile) {
+        float pesoBaro = (baroCorretto_m - ZONA_BLEND_LIDAR_START_m) /
+                         (ZONA_BLEND_LIDAR_END_m - ZONA_BLEND_LIDAR_START_m);
+        pesoBaro = constrain(pesoBaro, 0.0f, 1.0f);
+
+        altitudineCandidata_m = (G_altitudine_lidar_m * (1.0f - pesoBaro)) +
+                                (baroCorretto_m * pesoBaro);
+    }
+
+    if (b_prima_esecuzione) {
+        G_altitudine_m = altitudineCandidata_m;
+        b_prima_esecuzione = false;
+    } else {
+        float variazione_m = altitudineCandidata_m - altitudinePrecedente_m;
+        variazione_m = constrain(variazione_m,
+                                 -MAX_VARIAZIONE_ALTITUDINE_PER_CICLO_m,
+                                  MAX_VARIAZIONE_ALTITUDINE_PER_CICLO_m);
+        G_altitudine_m = altitudinePrecedente_m + variazione_m;
+    }
+
+    altitudinePrecedente_m = G_altitudine_m;
+}
+
+// Calcola il rateo verticale dalla variazione di quota nel tempo.
+// Valore positivo = salita, valore negativo = discesa.
+void aggiornaVelocitaVerticale() {
+    static float altitudinePrecedente_m = 0.0f;
+    static unsigned long tempoPrecedente_ms = 0;
+    static bool b_prima_esecuzione = true;
+
+    unsigned long tempoAttuale_ms = millis();
+    float dt_s = (tempoAttuale_ms - tempoPrecedente_ms) / 1000.0f;
+    tempoPrecedente_ms = tempoAttuale_ms;
+
+    if (!b_prima_esecuzione && dt_s > 0.0f && dt_s < 2.0f) {
+        G_velocita_verticale_ms = (G_altitudine_m - altitudinePrecedente_m) / dt_s;
+    }
+    altitudinePrecedente_m = G_altitudine_m;
+    b_prima_esecuzione = false;
+
+    static bool b_sink_rate_precedente = false;
+    B_sink_rate_eccessivo = (G_velocita_verticale_ms < SOGLIA_SINK_RATE_ms);
+    if (B_sink_rate_eccessivo != b_sink_rate_precedente) {
+        inviaMessaggioAvionica(B_sink_rate_eccessivo ? "ATTENZIONE: sink rate anomalo rilevato"
+                                                      : "Sink rate rientrato nei limiti normali");
+        b_sink_rate_precedente = B_sink_rate_eccessivo;
+    }
+}
+
+
+// Sceglie la migliore velocita' al suolo disponibile.
+// A bassa quota preferisce il flusso ottico, ad alta quota il GPS.
+// Nella zona intermedia fa un blend graduale tra i due.
+void aggiornaVelocitaSuolo() {
+    // -1 significa che il modulo della velocita' ottica non e' disponibile.
+    float velocitaOttica_ms = -1.0f;
+
+    // Il flusso ottico e' utilizzabile solo se entrambe le componenti sono valide.
+    bool b_ottico_disponibile =
+        B_PMW3901_OK &&
+        G_velocita_ottica_x_ms != -1.0f &&
+        G_velocita_ottica_y_ms != -1.0f;
+
+    // Calcoliamo il modulo della velocita' ottica.
+    if (b_ottico_disponibile) {
+        velocitaOttica_ms =
+            sqrtf(G_velocita_ottica_x_ms * G_velocita_ottica_x_ms +
+                  G_velocita_ottica_y_ms * G_velocita_ottica_y_ms);
+    }
+
+    // Per il GPS usiamo sempre la funzione unica gpsValido().
+    bool b_gps_disponibile = B_GPS_OK && gpsValido();
+
+    // A bassa quota preferiamo il sensore ottico.
+    if (G_altitudine_m < ZONA_BLEND_OTTICO_START_m) {
+        if (b_ottico_disponibile) {
+            G_velocita_suolo_ms = velocitaOttica_ms;
+        } else if (b_gps_disponibile) {
+            G_velocita_suolo_ms = G_velocita_suolo_gps_ms;
+        } else {
+            G_velocita_suolo_ms = -1.0f;
         }
         return;
     }
 
-    float vX_ms = (dx * COSTANTE_CALIBRAZIONE_OTTICA * ALTITUDINE_m) / dt_s;
-    float vY_ms = (dy * COSTANTE_CALIBRAZIONE_OTTICA * ALTITUDINE_m) / dt_s;
-
-    float yaw_rad = radians(yaw_deg);
-    VELOCITA_OTTICA_X_ms = vX_ms * cos(yaw_rad) - vY_ms * sin(yaw_rad);
-    VELOCITA_OTTICA_Y_ms = vX_ms * sin(yaw_rad) + vY_ms * cos(yaw_rad);
-
-    if (!statoVelocitaOtticaInizializzato || !velocitaOtticaDisponibilePrecedente) {
-        inviaMessaggioAvionica("Flusso ottico disponibile: velocita al suolo aggiornata");
-        velocitaOtticaDisponibilePrecedente = true;
-        statoVelocitaOtticaInizializzato = true;
+    // Sopra il limite ottico usiamo soltanto il GPS.
+    if (G_altitudine_m >= ALTITUDINE_MAX_OTTICO_m) {
+        G_velocita_suolo_ms =
+            b_gps_disponibile ? G_velocita_suolo_gps_ms : -1.0f;
+        return;
     }
-}
 
+    // Siamo nella zona di transizione.
+    if (b_ottico_disponibile && b_gps_disponibile) {
+        // 0 = tutto ottico, 1 = tutto GPS.
+        float pesoGPS =
+            (G_altitudine_m - ZONA_BLEND_OTTICO_START_m) /
+            (ALTITUDINE_MAX_OTTICO_m - ZONA_BLEND_OTTICO_START_m);
 
-void aggiornaDensitaAria(float pressione_pa, float temperatura_c) {
-    float temperatura_K = temperatura_c + 273.15f;
-    if (temperatura_K > 0.0f && pressione_pa > 0.0f) {
-        DENSITA_ARIA_kgm3 = pressione_pa / (R_SPECIFIC_ARIA * temperatura_K);
+        pesoGPS = constrain(pesoGPS, 0.0f, 1.0f);
+
+        G_velocita_suolo_ms =
+            velocitaOttica_ms * (1.0f - pesoGPS) +
+            G_velocita_suolo_gps_ms * pesoGPS;
+    } else if (b_ottico_disponibile) {
+        G_velocita_suolo_ms = velocitaOttica_ms;
+    } else if (b_gps_disponibile) {
+        G_velocita_suolo_ms = G_velocita_suolo_gps_ms;
     } else {
-        DENSITA_ARIA_kgm3 = 1.225f;   // Valore di default al livello del mare
+        G_velocita_suolo_ms = -1.0f;
     }
 }
 
-void selezionaAltitudine() {
-
-    const float ZONA_BLEND_START_m = ALTITUDINE_MAX_LIDAR_m - 2.0f; 
-    const float ZONA_BLEND_END_m   = ALTITUDINE_MAX_LIDAR_m;
-
-    static float offsetBaro_m = 0.0f;
-    
-    bool lidarValido = (lidarOk && ALTITUDINE_LIDAR_m > 0.0f);
-
-    if (lidarValido && ALTITUDINE_LIDAR_m < ZONA_BLEND_START_m) {
-        offsetBaro_m = ALTITUDINE_BARO_m - ALTITUDINE_LIDAR_m;
-    }
-
-    float baroCorretto_m = ALTITUDINE_BARO_m - offsetBaro_m;
-
-    // 3. Macchina a stati per l'assegnazione basata sulla quota normalizzata
-    if (baroCorretto_m < ZONA_BLEND_START_m) {
-        // ZONA BASSA: 100% LIDAR
-        if (lidarValido) {
-            ALTITUDINE_m = ALTITUDINE_LIDAR_m;
-        } else {
-            // Se il LIDAR si acceca a bassa quota (es. volo su acqua o erba altissima), 
-            // usiamo il barometro allineato all'ultimo dato utile.
-            ALTITUDINE_m = baroCorretto_m;
-        }
-    } 
-    else if (baroCorretto_m >= ZONA_BLEND_END_m) {
-        // ZONA ALTA: 100% Barometro (corretto con l'offset congelato alla salita)
-        ALTITUDINE_m = baroCorretto_m;
-    } 
-    else {
-        // ZONA DI TRANSIZIONE (CROSS-FADE)
-        if (lidarValido) {
-            // Calcolo del peso (W) del Barometro da 0.0 a 1.0
-            float pesoBaro = (baroCorretto_m - ZONA_BLEND_START_m) / (ZONA_BLEND_END_m - ZONA_BLEND_START_m);
-            pesoBaro = constrain(pesoBaro, 0.0f, 1.0f);
-
-            // Interpolazione lineare (LERP): (1 - W) * Lidar + W * Barometro
-            ALTITUDINE_m = (ALTITUDINE_LIDAR_m * (1.0f - pesoBaro)) + (baroCorretto_m * pesoBaro);
-        } else {
-            // Fallback immediato se il LIDAR cede durante la transizione
-            ALTITUDINE_m = baroCorretto_m;
-        }
-    }
-}
-
-void aggiornaVelocitaSuolo(float velocitaSuoloGps_ms) {
-
-    const float ZONA_BLEND_OTTICA_START_m = ALTITUDINE_MAX_OTTICO_m - 2.0f;
-
-    // 1. Calcolo preventivo dello stato dei sensori
-    float vel_ottica = -1.0f;
-    bool otticaValida = (VELOCITA_OTTICA_X_ms != -1.0f && VELOCITA_OTTICA_Y_ms != -1.0f);
-    
-    if (otticaValida) {
-        vel_ottica = sqrtf((VELOCITA_OTTICA_X_ms * VELOCITA_OTTICA_X_ms) + 
-                           (VELOCITA_OTTICA_Y_ms * VELOCITA_OTTICA_Y_ms));
-    }
-
-    bool gpsValido = (Errore_gps > 0);
-
-    // 3. Macchina a stati per l'assegnazione
-    if (ALTITUDINE_m < ZONA_BLEND_OTTICA_START_m) {
-        // ZONA BASSA: 100% Ottico
-        if (otticaValida) {
-            VELOCITA_SUOLO_ms = vel_ottica;
-        } else if (gpsValido) {
-            VELOCITA_SUOLO_ms = velocitaSuoloGps_ms; // Fallback d'emergenza
-        } else {
-            VELOCITA_SUOLO_ms = -1.0f;
-        }
-    } 
-    else if (ALTITUDINE_m >= ALTITUDINE_MAX_OTTICO_m) {
-        // ZONA ALTA: 100% GPS
-        if (gpsValido) {
-            VELOCITA_SUOLO_ms = velocitaSuoloGps_ms;
-        } else {
-            VELOCITA_SUOLO_ms = -1.0f;
-        }
-    } 
-    else {
-        // ZONA DI TRANSIZIONE (CROSS-FADE)
-        if (otticaValida && gpsValido) {
-            // Calcolo del peso (W) del GPS da 0.0 (inizio blend) a 1.0 (fine blend)
-            float pesoGPS = (ALTITUDINE_m - ZONA_BLEND_OTTICA_START_m) / (ALTITUDINE_MAX_OTTICO_m - ZONA_BLEND_OTTICA_START_m);
-            pesoGPS = constrain(pesoGPS, 0.0f, 1.0f); 
-
-            // Interpolazione lineare (LERP): (1 - W) * Sensore1 + W * Sensore2
-            VELOCITA_SUOLO_ms = (vel_ottica * (1.0f - pesoGPS)) + (velocitaSuoloGps_ms * pesoGPS);
-            
-        } else if (otticaValida) {
-            // Se in transizione perdiamo il GPS, usiamo solo l'ottico
-            VELOCITA_SUOLO_ms = vel_ottica;
-        } else if (gpsValido) {
-            // Se in transizione il flusso ottico diventa cieco (es. terreno senza texture), usiamo il GPS
-            VELOCITA_SUOLO_ms = velocitaSuoloGps_ms;
-        } else {
-            VELOCITA_SUOLO_ms = -1.0f;
-        }
-    }
-}
-//  NAVIGAZIONE GPS (guida L1) ----------------------------------------------------
-void aggiornaNavigazione(float yaw_deg) {
+// Aggiorna la navigazione verso il waypoint usando i dati GPS gia' globali.
+// Se la rotta GPS non e' affidabile a bassa velocita', usa lo yaw dell'IMU.
+void aggiornaNavigazione() {
     static unsigned long ultimoGpsValido_ms = 0;
-    static bool waypointRaggiunto = false;
-    static bool rottaConYawPrecedente = false;
-    static bool correzioneVentoPrecedente = false;
-    static bool gpsTimeoutPrecedente = false;
+    static bool b_waypoint_raggiunto = false;
+    static bool b_rotta_con_yaw_precedente = false;
+    static bool b_correzione_vento_precedente = false;
+    static bool b_gps_timeout_precedente = false;
     unsigned long tempoAttuale_ms = millis();
     
 
-    if (Errore_gps > 0) {
+    if (gpsValido()) {
         ultimoGpsValido_ms = tempoAttuale_ms;
-        gpsTimeoutPrecedente = false;
+        b_gps_timeout_precedente = false;
 
-        // Geometria verso il target: distanza (m) e rotta (°)
-        float velocitaPerCalcolo_ms = max(VELOCITA_SUOLO_ms, 1.0f);
+        float velocitaPerCalcolo_ms = max(G_velocita_suolo_ms, 1.0f);
         float L1_m = max(velocitaPerCalcolo_ms * 4.0f, 1.0f);
         float raggioAccettazioneDinamico_m = max(RAGGIO_ACCETTAZIONE_MINIMO_m, L1_m * 0.75f);
 
-        if (DISTANZA_TARGET_m <= raggioAccettazioneDinamico_m) {
-            if (!waypointRaggiunto) {
+        if (G_distanza_target_m <= raggioAccettazioneDinamico_m) {
+            if (!b_waypoint_raggiunto) {
                 inviaMessaggioAvionica("WAYPOINT RAGGIUNTO");
-                waypointRaggiunto = true;
+                b_waypoint_raggiunto = true;
             }
-            DISTANZA_TARGET_m = 0.0f;
+            G_distanza_target_m = 0.0f;
             return;
         } else {
-            waypointRaggiunto = false;
+            b_waypoint_raggiunto = false;
         }
 
-        bool rottaConYaw = (rottaAttuale_deg < 0.0f || VELOCITA_SUOLO_ms < VELOCITA_SUOLO_GPS_AFFIDABILE_ms);
-        if (rottaConYaw) { // fare un booleano: rotta_attuale_con_yaw
-            rottaAttuale_deg = yaw_deg;
-            if (!rottaConYawPrecedente) {
+        bool b_rotta_con_yaw = (G_rotta_attuale_deg < 0.0f || G_velocita_suolo_ms < VELOCITA_SUOLO_GPS_AFFIDABILE_ms);
+        if (b_rotta_con_yaw) {
+            G_rotta_attuale_deg = G_yaw_deg;
+            if (!b_rotta_con_yaw_precedente) {
                 inviaMessaggioAvionica("rotta attuale aggiornata con il yaw");
-                rottaConYawPrecedente = true;
+                b_rotta_con_yaw_precedente = true;
             }
         } else {
-            rottaConYawPrecedente = false;
+            b_rotta_con_yaw_precedente = false;
         }
 
-        float rottaCorretta_deg = ROTTA_TARGET_deg;   
+        float rottaCorretta_deg = G_rotta_target_deg;   
 
-        bool correzioneVento = (VENTO_VELOCITA_ms > 3.0f && VELOCITA_ARIA_ms > 3.0f);
-        if (correzioneVento) {
-            if (!correzioneVentoPrecedente) {
+        bool b_correzione_vento = (G_vento_velocita_ms > 3.0f && G_velocita_aria_ms > 3.0f);
+        if (b_correzione_vento) {
+            if (!b_correzione_vento_precedente) {
                 inviaMessaggioAvionica("navigazione corretta anche con il vento)");
-                correzioneVentoPrecedente = true;
+                b_correzione_vento_precedente = true;
             }
-            float deltaVento_deg = VENTO_DIREZIONE_deg - ROTTA_TARGET_deg;
+            float deltaVento_deg = G_vento_direzione_deg - G_rotta_target_deg;
             if (deltaVento_deg > 180.0f) deltaVento_deg -= 360.0f;
             if (deltaVento_deg < -180.0f) deltaVento_deg += 360.0f;
 
-            float argomentoAsin = (VENTO_VELOCITA_ms / VELOCITA_ARIA_ms) * sin(radians(deltaVento_deg));
-            argomentoAsin = constrain(argomentoAsin, -1.0f, 1.0f);   // Clamp: evita NaN se vento >= TAS
+            float argomentoAsin = (G_vento_velocita_ms / G_velocita_aria_ms) * sin(radians(deltaVento_deg));
+            argomentoAsin = constrain(argomentoAsin, -1.0f, 1.0f);
 
             float wca_deg = degrees(asin(argomentoAsin));
-            rottaCorretta_deg = ROTTA_TARGET_deg + wca_deg;
+            rottaCorretta_deg = G_rotta_target_deg + wca_deg;
 
             if (rottaCorretta_deg >= 360.0f) rottaCorretta_deg -= 360.0f;
             if (rottaCorretta_deg < 0.0f)    rottaCorretta_deg += 360.0f;
         } else {
-            correzioneVentoPrecedente = false;
+            b_correzione_vento_precedente = false;
         }
 
-        ERRORE_ROTTA_deg = rottaCorretta_deg - rottaAttuale_deg;
+        G_errore_rotta_deg = rottaCorretta_deg - G_rotta_attuale_deg;
 
-        // Normalizzazione a ±180° (via più breve per girare)
-        if (ERRORE_ROTTA_deg > 180.0f) {
-            ERRORE_ROTTA_deg -= 360.0f;
-        } else if (ERRORE_ROTTA_deg < -180.0f) {
-            ERRORE_ROTTA_deg += 360.0f;
+        if (G_errore_rotta_deg > 180.0f) {
+            G_errore_rotta_deg -= 360.0f;
+        } else if (G_errore_rotta_deg < -180.0f) {
+            G_errore_rotta_deg += 360.0f;
         }
 
-        // Guida L1: accelerazione laterale necessaria per curvare verso la rotta target
-        float eta_rad = radians(ERRORE_ROTTA_deg);
+        float eta_rad = radians(G_errore_rotta_deg);
         float aLaterale_ms2 = (2.0f * velocitaPerCalcolo_ms * velocitaPerCalcolo_ms / L1_m) * sin(eta_rad);
         float rollNecessario_rad = atan(aLaterale_ms2 / 9.81f);
         
-        ROLL_TARGET_deg = constrain(degrees(rollNecessario_rad), -MAX_ROLL_deg, MAX_ROLL_deg);
+        G_roll_target_deg = constrain(degrees(rollNecessario_rad), -MAX_ROLL_deg, MAX_ROLL_deg);
         
     } else {
         if ((tempoAttuale_ms - ultimoGpsValido_ms) > TIMEOUT_GPS_ms) {
-            if (!gpsTimeoutPrecedente) {
+            if (!b_gps_timeout_precedente) {
                 inviaMessaggioAvionica("ATTENZIONE: GPS non valido da troppo tempo, navigazione disabilitata");
-                gpsTimeoutPrecedente = true;
+                b_gps_timeout_precedente = true;
             }
-            ROLL_TARGET_deg = 0.0f;
+            G_roll_target_deg = 0.0f;
         } else {
-            gpsTimeoutPrecedente = false;
+            b_gps_timeout_precedente = false;
         }
     }
+
 }
 
 
-//  CALCOLO PID (quota -> pitch target -> comando pitch, roll, gas) ---------------
-void calcolaPID(float targetAltitudine_m, float targetRoll_deg,
-                 float pitchReale_deg, float rollReale_deg,
-                 float velocitaAria_kmh, float targetVelocita_kmh,
-                 int gasDiBase_us,
-                 int &comandoPitchOut_deg, int &comandoRollOut_deg, int &comandoGasOut_us)
-{
-    // 1. CALCOLO DEL TEMPO
-    unsigned long tempoAttuale_ms = millis();
-    float dt_s = (tempoAttuale_ms - TEMPO_PID_PRECEDENTE_ms) / 1000.0f;
+// Restituisce il tempo trascorso dall'ultimo aggiornamento del PID.
+// Tutti i PID usano lo stesso dt, quindi l'aggiornamento del tempo e' in un solo punto.
+float aggiornaTempoPID() {
+    unsigned long adesso_ms = millis();
 
-    if (dt_s <= 0.001f) return;   // Evita divisioni per zero
-    if (dt_s > 0.5f) dt_s = 0.5f; // Evita lag improvvisi: limita dt max a 0.5 s
-    TEMPO_PID_PRECEDENTE_ms = tempoAttuale_ms;
+    float dt_s =
+        (adesso_ms - G_tempo_pid_precedente_ms) / 1000.0f;
 
-    VELOCITA_TARGET_ATTUALE_kmh = targetVelocita_kmh;
-
-    // 2. PROTEZIONE STALLO / OVERSPEED (basata sulla velocità ARIA, unica grandezza aerodinamicamente corretta)
-    static bool inStallo = false;
-    static bool inOverspeed = false;
-
-    bool inStalloPrecedente = inStallo;
-    bool inOverspeedPrecedente = inOverspeed;
-
-    if (!inStallo) {
-        inStallo = (velocitaAria_kmh < VELOCITA_STALLO_X8_kmh);
-    } else {
-        inStallo = (velocitaAria_kmh < VELOCITA_STALLO_X8_kmh + MARGINE_ISTERESI_kmh);
+    // Se siamo stati chiamati troppo presto non calcoliamo il PID.
+    if (dt_s <= 0.001f) {
+        return 0.0f;
     }
 
-    if (!inOverspeed) {
-        inOverspeed = (velocitaAria_kmh > MAX_AIRSPEED_X8_kmh);
-    } else {
-        inOverspeed = (velocitaAria_kmh > MAX_AIRSPEED_X8_kmh - MARGINE_ISTERESI_kmh);
+    // Evita una derivata enorme dopo una pausa lunga.
+    if (dt_s > 0.5f) {
+        dt_s = 0.5f;
     }
 
-    if (inStallo) inOverspeed = false;
+    // Memorizziamo il tempo per il ciclo successivo.
+    G_tempo_pid_precedente_ms = adesso_ms;
+
+    return dt_s;
+}
 
 
-    if (inStallo != inStalloPrecedente) {
-        inviaMessaggioAvionica(inStallo ? "ATTENZIONE: STALLO rilevato, pitch forzato a picchiare"
-                                         : "Stallo rientrato, PID pitch ripristinato");
-    }
-    if (inOverspeed != inOverspeedPrecedente) {
-        inviaMessaggioAvionica(inOverspeed ? "ATTENZIONE: OVERSPEED rilevato, gas ridotto al minimo"
-                                            : "Overspeed rientrato, PID velocita' ripristinato");
-    }
+// Calcola soltanto i PID di assetto.
+// Questa funzione NON decide se siamo in stallo, overspeed o fuori quota.
+// Riceve semplicemente un target pitch e un target roll e prova a raggiungerli.
+void calcolaPIDAssetto(float targetPitch_deg, float targetRoll_deg, float dt_s) {
+    // ---------------- PID PITCH ----------------
 
-    // 3. PID ALTITUDINE (bypassato se in stallo/overspeed/fuori range: il pitch è dettato dal recupero)
-    float targetPitchAuto_deg = 0.0f;
-    int gasCorrente_us = gasDiBase_us;
-    static bool quotaMassimaPrecedente = false;
-    static bool quotaMinimaPrecedente = false;
+    // Errore = dove vogliamo essere - dove siamo.
+    float errorePitch_deg = targetPitch_deg - G_pitch_deg;
 
-    if (inStallo) {
-        if (!inStalloPrecedente) {
-            inviaMessaggioAvionica("ATTENZIONE: STALLO rilevato, pitch forzato a salire e gas al massimo PITCH_DOWN_FORZATO_deg=" + String(PITCH_DOWN_FORZATO_deg) + " GAS_MASSIMO_us=" + String(GAS_MASSIMO_us));
-        }
-        quotaMassimaPrecedente = false;
-        quotaMinimaPrecedente = false;
-        targetPitchAuto_deg = PITCH_DOWN_FORZATO_deg;
-        gasCorrente_us = GAS_MASSIMO_us;
-        resettaPID();
+    // Termine proporzionale.
+    float P_pitch = KP_PITCH_DEFAULT * errorePitch_deg;
 
-    } else if (inOverspeed) {
-        if (!inOverspeedPrecedente) {
-            inviaMessaggioAvionica("ATTENZIONE: OVERSPEED rilevato, pitch forzato a scendere e gas al minimo PITCH_DOWN_FORZATO_deg=" + String(PITCH_DOWN_FORZATO_deg) + " GAS_MINIMO_us=" + String(GAS_MINIMO_us));
-        }
-        quotaMassimaPrecedente = false;
-        quotaMinimaPrecedente = false;
-        targetPitchAuto_deg = -PITCH_DOWN_FORZATO_deg;
-        gasCorrente_us = GAS_MINIMO_us;
-        resettaPID();
+    // Termine integrale.
+    G_pid_pitch_integrale += errorePitch_deg * dt_s;
+    G_pid_pitch_integrale =
+        constrain(G_pid_pitch_integrale, -40.0f, 40.0f);
 
-    } else if (ALTITUDINE_m > ALTITUDINE_MAX_m) {
-        if (!quotaMassimaPrecedente) {
-            inviaMessaggioAvionica("ATTENZIONE: quota massima superata, pitch forzato a scendere e gas al minimo PITCH_DOWN_FORZATO_deg=" + String(PITCH_DOWN_FORZATO_deg) + " GAS_MINIMO_us=" + String(GAS_MINIMO_us));
-            quotaMassimaPrecedente = true;
-        }
-        quotaMinimaPrecedente = false;
-        // Sopra la quota massima: forza un pitch negativo (scendi) e riduce il gas al minimo
-        targetPitchAuto_deg = PITCH_DOWN_FORZATO_deg;
-        gasCorrente_us = GAS_MINIMO_us;
-        resettaPID();
+    float I_pitch =
+        KI_PITCH_DEFAULT * G_pid_pitch_integrale;
 
-    } else if (ALTITUDINE_m && !inStallo < ALTITUDINE_MIN_m) {
-        if (!quotaMinimaPrecedente) {
-            inviaMessaggioAvionica("ATTENZIONE: quota minima superata, pitch forzato a salire e gas al massimo PITCH_UP_FORZATO_deg=" + String(PITCH_UP_FORZATO_deg) + " GAS_MASSIMO_us=" + String(GAS_MASSIMO_us));
-            quotaMinimaPrecedente = true;
-        }
-        quotaMassimaPrecedente = false;
-        // Sotto la quota minima: forza un pitch positivo (sali) e aumenta il gas quasi al massimo
-        targetPitchAuto_deg = PITCH_UP_FORZATO_deg;
-        gasCorrente_us = GAS_MASSIMO_us;
-        resettaPID();
+    // Termine derivativo.
+    float D_pitch =
+        KD_PITCH_DEFAULT *
+        ((errorePitch_deg - G_pid_pitch_errore_precedente_deg) / dt_s);
 
-    } else {
-        quotaMassimaPrecedente = false;
-        quotaMinimaPrecedente = false;
-        // Quota nel range ammesso, nessuna emergenza velocità: calcolo PID normale
-        float erroreAltitudine_m = targetAltitudine_m - ALTITUDINE_m;
-        erroreAltitudine_m = constrain(erroreAltitudine_m, -20.0f, 20.0f);   // Limitato a ±20 m
+    G_pid_pitch_errore_precedente_deg = errorePitch_deg;
 
-        float P_alt = Kp_alt * erroreAltitudine_m;
+    // Comando finale pitch verso il mixer dei servi.
+    G_comando_pitch_deg =
+        (int)(P_pitch + I_pitch + D_pitch);
 
-        PID_ALT_INTEGRALE += erroreAltitudine_m * dt_s;
-        PID_ALT_INTEGRALE  = constrain(PID_ALT_INTEGRALE, -20.0f, 20.0f);   // Anti-windup
-        float I_alt = Ki_alt * PID_ALT_INTEGRALE;
+    G_comando_pitch_deg =
+        constrain(G_comando_pitch_deg, -MAX_PITCH_deg, MAX_PITCH_deg);
 
-        float D_alt = Kd_alt * ((erroreAltitudine_m - PID_ALT_ERRORE_PRECEDENTE_m) / dt_s);
-        PID_ALT_ERRORE_PRECEDENTE_m = erroreAltitudine_m;
 
-        targetPitchAuto_deg = constrain(P_alt + I_alt + D_alt, -10.0f, 15.0f);
+    // ---------------- PID ROLL ----------------
 
-        PID_ALT_ERRORE_m = erroreAltitudine_m; PID_ALT_P = P_alt; PID_ALT_I = I_alt; PID_ALT_D = D_alt;
-    }
-    PID_PITCH_TARGET_AUTO_deg = targetPitchAuto_deg;
+    // Errore di roll.
+    float erroreRoll_deg = targetRoll_deg - G_roll_deg;
 
-    // 4. PID PITCH — insegue il target (normale o di emergenza) calcolato sopra
-    float errorePitch_deg = targetPitchAuto_deg - pitchReale_deg;
+    // Termine proporzionale.
+    float P_roll = KP_ROLL_DEFAULT * erroreRoll_deg;
 
-    float P_pitch = Kp_pitch * errorePitch_deg;
+    // Termine integrale.
+    G_pid_roll_integrale += erroreRoll_deg * dt_s;
+    G_pid_roll_integrale =
+        constrain(G_pid_roll_integrale, -40.0f, 40.0f);
 
-    PID_PITCH_INTEGRALE += errorePitch_deg * dt_s;
-    PID_PITCH_INTEGRALE  = constrain(PID_PITCH_INTEGRALE, -40.0f, 40.0f);
-    float I_pitch = Ki_pitch * PID_PITCH_INTEGRALE;
+    float I_roll =
+        KI_ROLL_DEFAULT * G_pid_roll_integrale;
 
-    float D_pitch = Kd_pitch * ((errorePitch_deg - PID_PITCH_ERRORE_PRECEDENTE_deg) / dt_s);
-    PID_PITCH_ERRORE_PRECEDENTE_deg = errorePitch_deg;
+    // Termine derivativo.
+    float D_roll =
+        KD_ROLL_DEFAULT *
+        ((erroreRoll_deg - G_pid_roll_errore_precedente_deg) / dt_s);
 
-    comandoPitchOut_deg = (int)(P_pitch + I_pitch + D_pitch);
-    comandoPitchOut_deg = constrain(comandoPitchOut_deg, -MAX_PITCH_deg, MAX_PITCH_deg);
+    G_pid_roll_errore_precedente_deg = erroreRoll_deg;
 
-    PID_PITCH_ERRORE_deg = errorePitch_deg; PID_PITCH_P = P_pitch; PID_PITCH_I = I_pitch; PID_PITCH_D = D_pitch;
+    // Comando finale roll verso il mixer.
+    G_comando_roll_deg =
+        (int)(P_roll + I_roll + D_roll);
 
-    // 5. PID ROLL — insegue il target di rollio dalla guida L1
-    float erroreRoll_deg = targetRoll_deg - rollReale_deg;
+    G_comando_roll_deg =
+        constrain(G_comando_roll_deg, -MAX_ROLL_deg, MAX_ROLL_deg);
+}
 
-    float P_roll = Kp_roll * erroreRoll_deg;
 
-    PID_ROLL_INTEGRALE += erroreRoll_deg * dt_s;
-    PID_ROLL_INTEGRALE  = constrain(PID_ROLL_INTEGRALE, -40.0f, 40.0f);
-    float I_roll = Ki_roll * PID_ROLL_INTEGRALE;
+// Questo e' il PID NORMALE del volo automatico.
+// Qui dentro non esiste nessuna decisione di stallo, overspeed o quota critica.
+// Quelle decisioni vengono prese prima da verificaProtezioniVolo().
+void calcolaPID() {
+    // Otteniamo il dt comune a tutti i controllori.
+    float dt_s = aggiornaTempoPID();
 
-    float D_roll = Kd_roll * ((erroreRoll_deg - PID_ROLL_ERRORE_PRECEDENTE_deg) / dt_s);
-    PID_ROLL_ERRORE_PRECEDENTE_deg = erroreRoll_deg;
-
-    comandoRollOut_deg = (int)(P_roll + I_roll + D_roll);
-    comandoRollOut_deg = constrain(comandoRollOut_deg, -MAX_ROLL_deg, MAX_ROLL_deg);
-
-    PID_ROLL_ERRORE_deg = erroreRoll_deg; PID_ROLL_P = P_roll; PID_ROLL_I = I_roll; PID_ROLL_D = D_roll;
-
-    if (inStallo || inOverspeed) {
-        comandoGasOut_us = gasCorrente_us;
-        resettaPID();
+    // Se dt non e' valido lasciamo i comandi dell'ultimo ciclo.
+    if (dt_s <= 0.0f) {
         return;
     }
 
-    // 6. PID VELOCITÀ (ARIA) — regola il gas attorno al gas di base
-    float erroreVel_kmh = targetVelocita_kmh - velocitaAria_kmh;
+    // ========================================================
+    // PID ALTITUDINE -> genera il target di pitch
+    // ========================================================
 
-    float P_vel = Kp_vel * erroreVel_kmh;
+    // Errore di quota.
+    float erroreAltitudine_m =
+        G_altitudine_target_m - G_altitudine_m;
 
-    PID_VEL_INTEGRALE += erroreVel_kmh * dt_s;
-    PID_VEL_INTEGRALE  = constrain(PID_VEL_INTEGRALE, -30.0f, 30.0f);
-    float I_vel = Ki_vel * PID_VEL_INTEGRALE;
+    // Limitiamo l'errore per evitare richieste eccessive.
+    erroreAltitudine_m =
+        constrain(erroreAltitudine_m, -20.0f, 20.0f);
 
-    float D_vel = Kd_vel * ((erroreVel_kmh - PID_VEL_ERRORE_PRECEDENTE_kmh) / dt_s);
-    PID_VEL_ERRORE_PRECEDENTE_kmh = erroreVel_kmh;
+    // Parte proporzionale.
+    float P_alt =
+        KP_ALT_DEFAULT * erroreAltitudine_m;
 
-    int gasCalcolato_us = gasCorrente_us + (int)(P_vel + I_vel + D_vel);
-    comandoGasOut_us = constrain(gasCalcolato_us, GAS_MINIMO_us, GAS_MASSIMO_us);
+    // Parte integrale.
+    G_pid_alt_integrale += erroreAltitudine_m * dt_s;
+    G_pid_alt_integrale =
+        constrain(G_pid_alt_integrale, -20.0f, 20.0f);
 
-    PID_VEL_ERRORE_kmh = erroreVel_kmh; PID_VEL_P = P_vel; PID_VEL_I = I_vel; PID_VEL_D = D_vel;
+    float I_alt =
+        KI_ALT_DEFAULT * G_pid_alt_integrale;
+
+    // Parte derivativa.
+    float D_alt =
+        KD_ALT_DEFAULT *
+        ((erroreAltitudine_m - G_pid_alt_errore_precedente_m) / dt_s);
+
+    G_pid_alt_errore_precedente_m = erroreAltitudine_m;
+
+    // Il PID quota non muove direttamente il servo:
+    // produce il pitch che il PID di assetto deve raggiungere.
+    float targetPitch_deg =
+        constrain(P_alt + I_alt + D_alt, -10.0f, 15.0f);
+
+    // PID pitch + roll.
+    calcolaPIDAssetto(targetPitch_deg, G_roll_target_deg, dt_s);
+
+
+    // ========================================================
+    // PID VELOCITA -> genera il comando gas
+    // ========================================================
+
+    // Se il Pitot non e' affidabile non usiamo una velocita' falsa (-1)
+    // dentro al PID: manteniamo semplicemente il gas base previsto.
+    if (!B_pitot_disponibile) {
+        G_pid_vel_integrale = 0.0f;
+        G_pid_vel_errore_precedente_kmh = 0.0f;
+        G_comando_gas_us = G_gas_base_us;
+        return;
+    }
+
+    // Airspeed in km/h.
+    float velocitaAria_kmh =
+        G_velocita_aria_ms * 3.6f;
+
+    // Errore di velocita'.
+    float erroreVelocita_kmh =
+        G_target_velocita_kmh - velocitaAria_kmh;
+
+    // Parte proporzionale.
+    float P_vel =
+        KP_VEL_DEFAULT * erroreVelocita_kmh;
+
+    // Parte integrale.
+    G_pid_vel_integrale += erroreVelocita_kmh * dt_s;
+    G_pid_vel_integrale =
+        constrain(G_pid_vel_integrale, -30.0f, 30.0f);
+
+    float I_vel =
+        KI_VEL_DEFAULT * G_pid_vel_integrale;
+
+    // Parte derivativa.
+    float D_vel =
+        KD_VEL_DEFAULT *
+        ((erroreVelocita_kmh - G_pid_vel_errore_precedente_kmh) / dt_s);
+
+    G_pid_vel_errore_precedente_kmh = erroreVelocita_kmh;
+
+    // Sommiamo la correzione PID al gas base scelto dalla fase di volo.
+    int gasCalcolato_us =
+        G_gas_base_us + (int)(P_vel + I_vel + D_vel);
+
+    // Limiti fisici dell'ESC.
+    G_comando_gas_us =
+        constrain(gasCalcolato_us, GAS_MINIMO_us, GAS_MASSIMO_us);
 }
 
+
+// Decide se il drone e' fuori dall'inviluppo normale di volo.
+// IMPORTANTE: questa funzione decide SOLO quale protezione serve.
+// Non contiene nessun PID.
+int verificaProtezioniVolo() {
+    // Stato mantenuto per applicare isteresi a stallo e overspeed.
+    static bool b_in_stallo = false;
+    static bool b_in_overspeed = false;
+
+    // Stati precedenti usati solo per stampare i messaggi una volta.
+    bool b_stallo_precedente = b_in_stallo;
+    bool b_overspeed_precedente = b_in_overspeed;
+
+    // Il Pitot e' valido solo se la lettura corrente e' realmente disponibile.
+    bool b_airspeed_valida = B_pitot_disponibile;
+
+    // Convertiamo l'airspeed una sola volta.
+    float velocitaAria_kmh =
+        b_airspeed_valida ? G_velocita_aria_ms * 3.6f : -1.0f;
+
+    // --------------------------------------------------------
+    // STALLO MULTI-PARAMETRO
+    // --------------------------------------------------------
+    // 1) rilevamento classico: airspeed sotto la soglia;
+    // 2) rilevamento anticipato: airspeed vicina alla soglia +
+    //    pitch alto + il drone non sta piu' salendo.
+    //
+    // Non usiamo G_accel_z come "accelerazione verticale":
+    // quella e' sull'asse Z del drone, non sull'asse verticale terrestre.
+    // Il rateo G_velocita_verticale_ms e' piu' semplice e meno ambiguo.
+    const float PITCH_STALLO_PRECOCE_deg = 15.0f;
+
+    bool b_stallo_da_velocita =
+        b_airspeed_valida &&
+        velocitaAria_kmh < VELOCITA_STALLO_X8_kmh;
+
+    bool b_stallo_precoce =
+        b_airspeed_valida &&
+        velocitaAria_kmh < (VELOCITA_STALLO_X8_kmh + MARGINE_ISTERESI_kmh) &&
+        G_pitch_deg > PITCH_STALLO_PRECOCE_deg &&
+        G_velocita_verticale_ms <= 0.0f;
+
+    // Quando entriamo nello stallo basta una delle due condizioni.
+    if (!b_in_stallo) {
+        b_in_stallo =
+            b_stallo_da_velocita ||
+            b_stallo_precoce;
+    }
+    // Quando siamo gia' nello stallo richiediamo un margine di recupero.
+    else if (b_airspeed_valida) {
+        b_in_stallo =
+            velocitaAria_kmh <
+                (VELOCITA_STALLO_X8_kmh + MARGINE_ISTERESI_kmh) ||
+            b_stallo_precoce;
+    }
+
+    // --------------------------------------------------------
+    // OVERSPEED CON ISTERESI
+    // --------------------------------------------------------
+    if (!b_in_overspeed) {
+        b_in_overspeed =
+            b_airspeed_valida &&
+            velocitaAria_kmh > MAX_AIRSPEED_X8_kmh;
+    } else if (b_airspeed_valida) {
+        b_in_overspeed =
+            velocitaAria_kmh >
+            (MAX_AIRSPEED_X8_kmh - MARGINE_ISTERESI_kmh);
+    }
+
+    // Lo stallo ha priorita' sull'overspeed.
+    if (b_in_stallo) {
+        b_in_overspeed = false;
+    }
+
+    // Messaggio soltanto quando cambia lo stato.
+    if (b_in_stallo != b_stallo_precedente) {
+        inviaMessaggioAvionica(
+            b_in_stallo
+                ? "ATTENZIONE: STALLO / PRE-STALLO rilevato"
+                : "Stallo rientrato"
+        );
+    }
+
+    // Messaggio soltanto quando cambia lo stato.
+    if (b_in_overspeed != b_overspeed_precedente) {
+        inviaMessaggioAvionica(
+            b_in_overspeed
+                ? "ATTENZIONE: OVERSPEED rilevato"
+                : "Overspeed rientrato"
+        );
+    }
+
+    // Priorita' delle protezioni.
+    if (b_in_stallo) {
+        return PROTEZIONE_STALLO;
+    }
+
+    if (b_in_overspeed) {
+        return PROTEZIONE_OVERSPEED;
+    }
+
+    if (G_altitudine_m > ALTITUDINE_MAX_m) {
+        return PROTEZIONE_QUOTA_MASSIMA;
+    }
+
+    // Forma corretta della condizione:
+    // prima confrontiamo direttamente la quota con ALTITUDINE_MIN_m.
+    if (G_altitudine_m < ALTITUDINE_MIN_m) {
+        return PROTEZIONE_QUOTA_MINIMA;
+    }
+
+    return PROTEZIONE_NESSUNA;
+}
+
+
+// Applica i comandi richiesti dalla protezione.
+// La logica di safety e' quindi completamente fuori da calcolaPID().
+void calcolaComandiProtezione(int protezione) {
+    // Aggiorniamo il tempo del controllore di assetto.
+    float dt_s = aggiornaTempoPID();
+
+    if (dt_s <= 0.0f) {
+        return;
+    }
+
+    // Evitiamo wind-up dei PID quota e velocita' mentre una protezione
+    // sta comandando direttamente pitch/gas.
+    G_pid_alt_integrale = 0.0f;
+    G_pid_alt_errore_precedente_m = 0.0f;
+    G_pid_vel_integrale = 0.0f;
+    G_pid_vel_errore_precedente_kmh = 0.0f;
+
+    // Target scelti dalla protezione.
+    float targetPitch_deg = 0.0f;
+    float targetRoll_deg = G_roll_target_deg;
+    int gas_us = G_gas_base_us;
+
+    if (protezione == PROTEZIONE_STALLO) {
+        // Per recuperare dallo stallo abbassiamo il muso,
+        // livelliamo le ali e chiediamo gas massimo.
+        targetPitch_deg = PITCH_DOWN_FORZATO_deg;
+        targetRoll_deg = 0.0f;
+        gas_us = GAS_MASSIMO_us;
+    }
+    else if (protezione == PROTEZIONE_OVERSPEED) {
+        // Per ridurre velocita' alziamo il muso e portiamo il gas al minimo.
+        targetPitch_deg = -PITCH_DOWN_FORZATO_deg;
+        gas_us = GAS_MINIMO_us;
+    }
+    else if (protezione == PROTEZIONE_QUOTA_MASSIMA) {
+        // Sopra la quota massima chiediamo discesa e gas minimo.
+        targetPitch_deg = PITCH_DOWN_FORZATO_deg;
+        gas_us = GAS_MINIMO_us;
+    }
+    else if (protezione == PROTEZIONE_QUOTA_MINIMA) {
+        // Sotto la quota minima chiediamo salita e gas massimo.
+        targetPitch_deg = PITCH_UP_FORZATO_deg;
+        gas_us = GAS_MASSIMO_us;
+    }
+
+    // Il target di assetto viene comunque raggiunto tramite i PID pitch/roll.
+    // La safety decide COSA chiedere, il controllore decide COME muovere i servi.
+    calcolaPIDAssetto(targetPitch_deg, targetRoll_deg, dt_s);
+
+    // Il gas invece e' imposto direttamente dalla protezione.
+    G_comando_gas_us = gas_us;
+}
 
 int gasMaxTermico() {
     static int statoTermicoPrecedente = -1;
 
-    // 1. Taglio immediato: se la temperatura supera il limite massimo consentito
-    if (TEMPERATURA_MOTORE_C >= MAX_THROTTLE_END_TEMP_C || 
-        TEMPERATURA_ESC_C >= MIN_ESC_END_TEMP_C) {
+    if (G_temperatura_motore_c >= MOTORE_TEMP_DERATING_END_C || 
+        G_temperatura_esc_c >= ESC_TEMP_DERATING_END_C) {
         if (statoTermicoPrecedente != 0) {
             inviaMessaggioAvionica("ATTENZIONE: temperatura motore o ESC troppo alta, gas ridotto al minimo");
             statoTermicoPrecedente = 0;
@@ -946,9 +1366,8 @@ int gasMaxTermico() {
         return GAS_MINIMO_us;
     }
 
-    // 2. Zona sicura: se entrambe le temperature sono sotto la soglia di intervento
-    if (TEMPERATURA_MOTORE_C <= MIN_THROTTLE_START_TEMP_C && 
-        TEMPERATURA_ESC_C <= MIN_ESC_START_TEMP_C) {
+    if (G_temperatura_motore_c <= MOTORE_TEMP_DERATING_START_C && 
+        G_temperatura_esc_c <= ESC_TEMP_DERATING_START_C) {
         if (statoTermicoPrecedente != 1) {
             inviaMessaggioAvionica("Temperatura motore e ESC nella zona sicura, gas massimo consentito");
             statoTermicoPrecedente = 1;
@@ -959,25 +1378,21 @@ int gasMaxTermico() {
     float fattoreMotore = 0.0f;
     float fattoreESC = 0.0f;
 
-    // 3. Calcolo fattore Motore (solo se in zona di derating)
-    if (TEMPERATURA_MOTORE_C > MIN_THROTTLE_START_TEMP_C) {
-        // Protezione contro la divisione per zero
-        if (MAX_THROTTLE_END_TEMP_C > MIN_THROTTLE_START_TEMP_C) {
-            fattoreMotore = (TEMPERATURA_MOTORE_C - MIN_THROTTLE_START_TEMP_C) / 
-                            (MAX_THROTTLE_END_TEMP_C - MIN_THROTTLE_START_TEMP_C);
+    if (G_temperatura_motore_c > MOTORE_TEMP_DERATING_START_C) {
+        if (MOTORE_TEMP_DERATING_END_C > MOTORE_TEMP_DERATING_START_C) {
+            fattoreMotore = (G_temperatura_motore_c - MOTORE_TEMP_DERATING_START_C) / 
+                            (MOTORE_TEMP_DERATING_END_C - MOTORE_TEMP_DERATING_START_C);
         } else {
-            fattoreMotore = 1.0f; // Massima limitazione di sicurezza
+            fattoreMotore = 1.0f;
         }
     }
 
-    // 4. Calcolo fattore ESC (usando la tua variabile MIN_ESC_END_TEMP_C)
-    if (TEMPERATURA_ESC_C > MIN_ESC_START_TEMP_C) {
-        // Protezione contro la divisione per zero
-        if (MIN_ESC_END_TEMP_C > MIN_ESC_START_TEMP_C) {
-            fattoreESC = (TEMPERATURA_ESC_C - MIN_ESC_START_TEMP_C) / 
-                         (MIN_ESC_END_TEMP_C - MIN_ESC_START_TEMP_C);
+    if (G_temperatura_esc_c > ESC_TEMP_DERATING_START_C) {
+        if (ESC_TEMP_DERATING_END_C > ESC_TEMP_DERATING_START_C) {
+            fattoreESC = (G_temperatura_esc_c - ESC_TEMP_DERATING_START_C) / 
+                         (ESC_TEMP_DERATING_END_C - ESC_TEMP_DERATING_START_C);
         } else {
-            fattoreESC = 1.0f; // Massima limitazione di sicurezza
+            fattoreESC = 1.0f;
         }
     }
     float fattoreInterpolazione = 0.0f;
@@ -995,47 +1410,56 @@ int gasMaxTermico() {
         fattoreInterpolazione = fattoreESC;
     }
 
-    // Clamping: assicura che il fattore non superi mai 1.0 a causa di letture anomale dei sensori
     if (fattoreInterpolazione > 1.0f) {
         fattoreInterpolazione = 1.0f;
     }
 
-    // 6. Calcolo del segnale PWM finale
     float limite_us = GAS_MASSIMO_us - (fattoreInterpolazione * (GAS_MASSIMO_us - GAS_MINIMO_us));
     
-    // Arrotondamento professionale all'intero più vicino per sistemi embedded
     return (int)(limite_us + 0.5f);
 }
 
-// Azzera tutti gli stati integrali/derivativi dei 4 PID e il riferimento temporale dt
 void resettaPID() {
-    PID_ALT_INTEGRALE   = 0.0f;  PID_ALT_ERRORE_PRECEDENTE_m   = 0.0f;
-    PID_PITCH_INTEGRALE = 0.0f;  PID_PITCH_ERRORE_PRECEDENTE_deg = 0.0f;
-    PID_ROLL_INTEGRALE  = 0.0f;  PID_ROLL_ERRORE_PRECEDENTE_deg  = 0.0f;
-    PID_VEL_INTEGRALE   = 0.0f;  PID_VEL_ERRORE_PRECEDENTE_kmh   = 0.0f;
-    TEMPO_PID_PRECEDENTE_ms = millis();
+    G_pid_alt_integrale   = 0.0f;  G_pid_alt_errore_precedente_m   = 0.0f;
+    G_pid_pitch_integrale = 0.0f;  G_pid_pitch_errore_precedente_deg = 0.0f;
+    G_pid_roll_integrale  = 0.0f;  G_pid_roll_errore_precedente_deg  = 0.0f;
+    G_pid_vel_integrale   = 0.0f;  G_pid_vel_errore_precedente_kmh   = 0.0f;
+    G_tempo_pid_precedente_ms = millis();
 }
 
 
-//  FUNZIONI DI CONTROLLO
+// Trasforma i comandi pitch/roll nei quattro angoli dei servi.
+// Legge direttamente G_comando_pitch_deg e G_comando_roll_deg.
+void applicaMixer4Servi() {
+    // Copie locali con nomi corti: rendono leggibile tutta la matematica del mixer.
+    int pitch_deg = G_comando_pitch_deg;
+    int roll_deg  = G_comando_roll_deg;
 
-void applicaMixer4Servi(int pitch_deg, int roll_deg) {
+    // Questi stati servono solo a questa funzione, quindi NON sono globali.
+    static bool b_interni_precedenti = true;
+    static bool b_esterni_precedenti = true;
+
+    // Anche lo stato precedente dei singoli servi serve solo al mixer.
+    static bool b_int_sx_precedente = true;
+    static bool b_int_dx_precedente = true;
+    static bool b_est_sx_precedente = true;
+    static bool b_est_dx_precedente = true;
+
     static int casoMixerPrecedente = -1;
     int posIntSX_deg = CENTRO_SERVO_deg;
     int posIntDX_deg = CENTRO_SERVO_deg;
     int posEstSX_deg = CENTRO_SERVO_deg;
     int posEstDX_deg = CENTRO_SERVO_deg;
 
-    // Batteria Teensy bassa: (disattiva i servi interni)
-    if (batteriaBassaTeensy) {
-        intSxOk = false;
-        intDxOk = false;
+    if (B_batteria_bassa_teensy) {
+        B_SERVO_INT_SX_OK = false;
+        B_SERVO_INT_DX_OK = false;
     }
 
-    bool esterniAttivi = estSxOk && estDxOk;
-    bool interniAttivi = intSxOk && intDxOk;
+    bool b_esterni_attivi = B_SERVO_EST_SX_OK && B_SERVO_EST_DX_OK;
+    bool b_interni_attivi = B_SERVO_INT_SX_OK && B_SERVO_INT_DX_OK;
 
-    if (esterniAttivi && interniAttivi) {
+    if (b_esterni_attivi && b_interni_attivi) {
         if (casoMixerPrecedente != 0) {
             inviaMessaggioAvionica("Caso A: tutto OK — interni = SOLO PITCH, esterni = SOLO ROLL");
             casoMixerPrecedente = 0;
@@ -1044,14 +1468,14 @@ void applicaMixer4Servi(int pitch_deg, int roll_deg) {
         posIntDX_deg = CENTRO_SERVO_deg + pitch_deg;
         posEstSX_deg = CENTRO_SERVO_deg + roll_deg;
         posEstDX_deg = CENTRO_SERVO_deg - roll_deg;
-    } else if (esterniAttivi && !interniAttivi) {
+    } else if (b_esterni_attivi && !b_interni_attivi) {
         if (casoMixerPrecedente != 1) {
             inviaMessaggioAvionica("Caso B: interni rotti — esterni fanno pitch + roll");
             casoMixerPrecedente = 1;
         }
         posEstSX_deg = CENTRO_SERVO_deg + pitch_deg + roll_deg;
         posEstDX_deg = CENTRO_SERVO_deg + pitch_deg - roll_deg;
-    } else if (!esterniAttivi && interniAttivi) {
+    } else if (!b_esterni_attivi && b_interni_attivi) {
         if (casoMixerPrecedente != 2) {
             inviaMessaggioAvionica("Caso C: esterni rotti — interni fanno pitch + roll");
             casoMixerPrecedente = 2;
@@ -1059,233 +1483,272 @@ void applicaMixer4Servi(int pitch_deg, int roll_deg) {
         posIntSX_deg = CENTRO_SERVO_deg + pitch_deg + roll_deg;
         posIntDX_deg = CENTRO_SERVO_deg + pitch_deg - roll_deg;
     } else {
-        if (casoMixerPrecedente != 3) {
-            inviaMessaggioAvionica("Caso D: tutti i servi rotti: nulla da comandare");
-            casoMixerPrecedente = 3;
-        }
-        return;
-    }
+        // Se non esiste piu' una coppia completa, controlliamo se almeno
+        // un singolo servo e' ancora funzionante. In quel caso lo usiamo
+        // soltanto per il pitch, con autorita' minima di emergenza.
+        bool b_singolo_int_sx = B_SERVO_INT_SX_OK && !B_SERVO_INT_DX_OK;
+        bool b_singolo_int_dx = !B_SERVO_INT_SX_OK && B_SERVO_INT_DX_OK;
+        bool b_singolo_est_sx = B_SERVO_EST_SX_OK && !B_SERVO_EST_DX_OK;
+        bool b_singolo_est_dx = !B_SERVO_EST_SX_OK && B_SERVO_EST_DX_OK;
 
-    // Attach/detach automatico in base a se i servi sono considerati attivi o no
-    if (interniAttivi != statoPrecedenteInterni) {
-        if (interniAttivi) {
-            servoInternoSX.attach(PIN_INT_SX);
-            servoInternoDX.attach(PIN_INT_DX);
-            inviaMessaggioAvionica("Servi interni: ATTIVATI");
+        if (b_singolo_int_sx || b_singolo_int_dx || b_singolo_est_sx || b_singolo_est_dx) {
+            if (casoMixerPrecedente != 4) {
+                inviaMessaggioAvionica("Caso E: nessuna coppia completa — uso il singolo servo superstite solo per pitch");
+                casoMixerPrecedente = 4;
+            }
+            if (b_singolo_int_sx) posIntSX_deg = CENTRO_SERVO_deg + pitch_deg;
+            if (b_singolo_int_dx) posIntDX_deg = CENTRO_SERVO_deg + pitch_deg;
+            if (b_singolo_est_sx) posEstSX_deg = CENTRO_SERVO_deg + pitch_deg;
+            if (b_singolo_est_dx) posEstDX_deg = CENTRO_SERVO_deg + pitch_deg;
         } else {
-            servoInternoSX.detach();
-            servoInternoDX.detach();
-            inviaMessaggioAvionica("Servi interni: STACCATI");
+            if (casoMixerPrecedente != 3) {
+                inviaMessaggioAvionica("Caso D: tutti i servi rotti: nulla da comandare");
+                casoMixerPrecedente = 3;
+            }
+            return;
         }
-        statoPrecedenteInterni = interniAttivi;
     }
 
-    if (esterniAttivi != statoPrecedenteEsterni) {
-        if (esterniAttivi) {
-            servoEsternoSX.attach(PIN_EST_SX);
-            servoEsternoDX.attach(PIN_EST_DX);
-            inviaMessaggioAvionica("Servi esterni: ATTIVATI");
-        } else {
-            servoEsternoSX.detach();
-            servoEsternoDX.detach();
-            inviaMessaggioAvionica("Servi esterni: STACCATI");
-        }
-        statoPrecedenteEsterni = esterniAttivi;
+    if (b_interni_attivi != b_interni_precedenti) {
+        inviaMessaggioAvionica(b_interni_attivi ? "Servi interni: coppia ATTIVA" : "Servi interni: coppia NON completa");
+        b_interni_precedenti = b_interni_attivi;
+    }
+    if (b_esterni_attivi != b_esterni_precedenti) {
+        inviaMessaggioAvionica(b_esterni_attivi ? "Servi esterni: coppia ATTIVA" : "Servi esterni: coppia NON completa");
+        b_esterni_precedenti = b_esterni_attivi;
     }
 
-    // Limiti di sicurezza meccanici: 45°-135° (±45° dal centro 90°)
+    // Attach/detach viene gestito per ogni servo singolarmente:
+    // un servo sano rimane utilizzabile anche se il suo compagno e' guasto.
+    if (B_SERVO_INT_SX_OK != b_int_sx_precedente) {
+        if (B_SERVO_INT_SX_OK) servoInternoSX.attach(PIN_INT_SX); else servoInternoSX.detach();
+        inviaMessaggioAvionica(B_SERVO_INT_SX_OK ? "ServoIntSX: ATTACCATO" : "ServoIntSX: STACCATO");
+        b_int_sx_precedente = B_SERVO_INT_SX_OK;
+    }
+    if (B_SERVO_INT_DX_OK != b_int_dx_precedente) {
+        if (B_SERVO_INT_DX_OK) servoInternoDX.attach(PIN_INT_DX); else servoInternoDX.detach();
+        inviaMessaggioAvionica(B_SERVO_INT_DX_OK ? "ServoIntDX: ATTACCATO" : "ServoIntDX: STACCATO");
+        b_int_dx_precedente = B_SERVO_INT_DX_OK;
+    }
+    if (B_SERVO_EST_SX_OK != b_est_sx_precedente) {
+        if (B_SERVO_EST_SX_OK) servoEsternoSX.attach(PIN_EST_SX); else servoEsternoSX.detach();
+        inviaMessaggioAvionica(B_SERVO_EST_SX_OK ? "ServoEstSX: ATTACCATO" : "ServoEstSX: STACCATO");
+        b_est_sx_precedente = B_SERVO_EST_SX_OK;
+    }
+    if (B_SERVO_EST_DX_OK != b_est_dx_precedente) {
+        if (B_SERVO_EST_DX_OK) servoEsternoDX.attach(PIN_EST_DX); else servoEsternoDX.detach();
+        inviaMessaggioAvionica(B_SERVO_EST_DX_OK ? "ServoEstDX: ATTACCATO" : "ServoEstDX: STACCATO");
+        b_est_dx_precedente = B_SERVO_EST_DX_OK;
+    }
+
     posIntSX_deg = constrain(posIntSX_deg, 45, 135);
     posIntDX_deg = constrain(posIntDX_deg, 45, 135);
     posEstSX_deg = constrain(posEstSX_deg, 45, 135);
     posEstDX_deg = constrain(posEstDX_deg, 45, 135);
 
-    if (interniAttivi) {
-        servoInternoSX.write(posIntSX_deg);
-        servoInternoDX.write(posIntDX_deg);
-    }
-    if (esterniAttivi) {
-        servoEsternoSX.write(posEstSX_deg);
-        servoEsternoDX.write(posEstDX_deg);
-    }
+    // Scriviamo soltanto sui servi che risultano funzionanti.
+    if (B_SERVO_INT_SX_OK) servoInternoSX.write(posIntSX_deg);
+    if (B_SERVO_INT_DX_OK) servoInternoDX.write(posIntDX_deg);
+    if (B_SERVO_EST_SX_OK) servoEsternoSX.write(posEstSX_deg);
+    if (B_SERVO_EST_DX_OK) servoEsternoDX.write(posEstDX_deg);
+
 }
 
-//  DIAGNOSTICA SERVI ---------------------------------------------------------------
+bool letturaINAValida(float tensione_V) {
+    return isfinite(tensione_V) &&
+           tensione_V >= INA219_TENSIONE_MIN_PLAUSIBILE_V &&
+           tensione_V <= INA219_TENSIONE_MAX_PLAUSIBILE_V;
+}
+
 void diagnosticaServi() {
-    if (!servoSicurezza) {
-        estSxOk = estDxOk = intSxOk = intDxOk = true;
+    if (!B_servo_sicurezza) {
+        B_SERVO_EST_SX_OK = B_SERVO_EST_DX_OK = B_SERVO_INT_SX_OK = B_SERVO_INT_DX_OK = true;
         return;
     }
 
-    static int erroriConsecutivi[4] = {0, 0, 0, 0};   // [EstSX, EstDX, IntSX, IntDX]
-    float corrente_mA = 0.0f;
+    static int erroriConsecutivi[4] = {0, 0, 0, 0};
 
-    // Servo Esterno SX
-    corrente_mA = sensoreEstSX.getCurrent_mA();
-    CORRENTE_SERVO_EST_SX_mA = corrente_mA;
-    if (corrente_mA < SERVO_mA_MIN || corrente_mA > SERVO_mA_MAX) {
-        erroriConsecutivi[0]++;
-        if (erroriConsecutivi[0] > ERRORI_CONSECUTIVI_SERVO) {
-            estSxOk = false;
-            inviaMessaggioAvionica("WARN: ServoEstSX assunzione corrente fuori limiti per troppo tempo");
+    float corrente_mA;
+    float tensione_V;
+
+    tensione_V = sensoreEstSX.getBusVoltage_V();
+    B_INA219_EST_SX_OK = letturaINAValida(tensione_V);
+    if (B_INA219_EST_SX_OK) {
+        G_tensione_servo_est_sx_v = tensione_V;
+        corrente_mA = sensoreEstSX.getCurrent_mA();
+        if (corrente_mA < SERVO_mA_MIN || corrente_mA > SERVO_mA_MAX) {
+            erroriConsecutivi[0]++;
+            if (erroriConsecutivi[0] > ERRORI_CONSECUTIVI_SERVO) B_SERVO_EST_SX_OK = false;
+        } else {
+            erroriConsecutivi[0] = 0;
+            B_SERVO_EST_SX_OK = true;
         }
-    } else {
-        erroriConsecutivi[0] = 0;
-        estSxOk = true;
     }
 
-    // Servo Esterno DX
-    corrente_mA = sensoreEstDX.getCurrent_mA();
-    CORRENTE_SERVO_EST_DX_mA = corrente_mA;
-    if (corrente_mA < SERVO_mA_MIN || corrente_mA > SERVO_mA_MAX) {
-        erroriConsecutivi[1]++;
-        if (erroriConsecutivi[1] > ERRORI_CONSECUTIVI_SERVO) {
-            estDxOk = false;
-            inviaMessaggioAvionica("WARN: ServoEstDX assunzione corrente fuori limiti per troppo tempo");
+    tensione_V = sensoreEstDX.getBusVoltage_V();
+    B_INA219_EST_DX_OK = letturaINAValida(tensione_V);
+    if (B_INA219_EST_DX_OK) {
+        G_tensione_servo_est_dx_v = tensione_V;
+        corrente_mA = sensoreEstDX.getCurrent_mA();
+        if (corrente_mA < SERVO_mA_MIN || corrente_mA > SERVO_mA_MAX) {
+            erroriConsecutivi[1]++;
+            if (erroriConsecutivi[1] > ERRORI_CONSECUTIVI_SERVO) B_SERVO_EST_DX_OK = false;
+        } else {
+            erroriConsecutivi[1] = 0;
+            B_SERVO_EST_DX_OK = true;
         }
-    } else {
-        erroriConsecutivi[1] = 0;
-        estDxOk = true;
     }
 
-    // Servo Interno SX
-    corrente_mA = sensoreIntSX.getCurrent_mA();
-    CORRENTE_SERVO_INT_SX_mA = corrente_mA;
-    if (corrente_mA < SERVO_mA_MIN || corrente_mA > SERVO_mA_MAX) {
-        erroriConsecutivi[2]++;
-        if (erroriConsecutivi[2] > ERRORI_CONSECUTIVI_SERVO) {
-            intSxOk = false;
-            inviaMessaggioAvionica("WARN: ServoIntSX assunzione corrente fuori limiti per troppo tempo");
+    tensione_V = sensoreIntSX.getBusVoltage_V();
+    B_INA219_INT_SX_OK = letturaINAValida(tensione_V);
+    if (B_INA219_INT_SX_OK) {
+        G_tensione_servo_int_sx_v = tensione_V;
+        corrente_mA = sensoreIntSX.getCurrent_mA();
+        if (corrente_mA < SERVO_mA_MIN || corrente_mA > SERVO_mA_MAX) {
+            erroriConsecutivi[2]++;
+            if (erroriConsecutivi[2] > ERRORI_CONSECUTIVI_SERVO) B_SERVO_INT_SX_OK = false;
+        } else {
+            erroriConsecutivi[2] = 0;
+            B_SERVO_INT_SX_OK = true;
         }
-    } else {
-        erroriConsecutivi[2] = 0;
-        intSxOk = true;
     }
 
-    // Servo Interno DX
-    corrente_mA = sensoreIntDX.getCurrent_mA();
-    CORRENTE_SERVO_INT_DX_mA = corrente_mA;
-    if (corrente_mA < SERVO_mA_MIN || corrente_mA > SERVO_mA_MAX) {
-        erroriConsecutivi[3]++;
-        if (erroriConsecutivi[3] > ERRORI_CONSECUTIVI_SERVO) {
-            intDxOk = false;
-            inviaMessaggioAvionica("WARN: ServoIntDX assunzione corrente fuori limiti per troppo tempo");
+    tensione_V = sensoreIntDX.getBusVoltage_V();
+    B_INA219_INT_DX_OK = letturaINAValida(tensione_V);
+    if (B_INA219_INT_DX_OK) {
+        G_tensione_servo_int_dx_v = tensione_V;
+        corrente_mA = sensoreIntDX.getCurrent_mA();
+        if (corrente_mA < SERVO_mA_MIN || corrente_mA > SERVO_mA_MAX) {
+            erroriConsecutivi[3]++;
+            if (erroriConsecutivi[3] > ERRORI_CONSECUTIVI_SERVO) B_SERVO_INT_DX_OK = false;
+        } else {
+            erroriConsecutivi[3] = 0;
+            B_SERVO_INT_DX_OK = true;
         }
-    } else {
-        erroriConsecutivi[3] = 0;
-        intDxOk = true;
     }
+
+    B_INA219_OK = B_INA219_MOTORE_OK && B_INA219_TEENSY_OK &&
+                  B_INA219_INT_SX_OK && B_INA219_INT_DX_OK &&
+                  B_INA219_EST_SX_OK && B_INA219_EST_DX_OK;
 }
 
 
 void gestisciAlimentazione() {
+    unsigned long tempo_attuale_ms = millis();
+    float dt_ore = (tempo_attuale_ms - G_tempo_batteria_precedente_ms) / 3600000.0f;
 
-    unsigned long tempo_attuale = millis();
-    float dt_ore = (tempo_attuale - TEMPO_BATTERIA_PRECEDENTE_ms) / 3600000.0;
-    
-    iTeensy = sensoreTeensy.getCurrent_mA();
-    iMotore = sensoreMotore.getCurrent_mA();
-    vTeensy = sensoreTeensy.getBusVoltage_V();
-    vMotore = sensoreMotore.getBusVoltage_V();
-    
-    G_carica_consumata_teensy += (iTeensy * dt_ore);
-    G_carica_consumata_motore += (iMotore * dt_ore);
-    
-    // 4. Calcolo percentuale residua
-    G_carica_rimanente_teensy_percentuale = ((CAPACITA_TEENSY - G_carica_consumata_teensy) / CAPACITA_TEENSY) * 100.0;
-    G_carica_rimanente_MOTORE_percentuale = ((CAPACITA_MOTORE - G_carica_consumata_motore) / CAPACITA_MOTORE) * 100.0;
-    
-    // 5. Calcolo dell'autonomia residua in ore
-    if (iTeensy > 0.0) {
-        G_autonomia_teensy_residua = (CAPACITA_TEENSY - G_carica_consumata_teensy) / iTeensy;
-    } else {
-        G_autonomia_teensy_residua = -1;
+    float tensioneTeensy_V = sensoreTeensy.getBusVoltage_V();
+    float tensioneMotore_V = sensoreMotore.getBusVoltage_V();
+
+    B_INA219_TEENSY_OK = B_INA219_INIZIALIZZATO && letturaINAValida(tensioneTeensy_V);
+    B_INA219_MOTORE_OK = B_INA219_INIZIALIZZATO && letturaINAValida(tensioneMotore_V);
+
+    if (B_INA219_TEENSY_OK) {
+        G_tensione_teensy_v = tensioneTeensy_V;
+        G_corrente_teensy_ma = sensoreTeensy.getCurrent_mA();
+        G_carica_consumata_teensy += G_corrente_teensy_ma * dt_ore;
+
+        G_carica_rimanente_teensy_percentuale =
+            ((CAPACITA_TEENSY_mAh - G_carica_consumata_teensy) / CAPACITA_TEENSY_mAh) * 100.0f;
+
+        G_autonomia_teensy_residua = G_corrente_teensy_ma > 0.0f
+            ? (CAPACITA_TEENSY_mAh - G_carica_consumata_teensy) / G_corrente_teensy_ma
+            : -1.0f;
     }
 
-    if (iMotore > 0.0) {
-        G_autonomia_motore_residua = (CAPACITA_MOTORE - G_carica_consumata_motore) / iMotore;
-    } else {
-        G_autonomia_motore_residua = -1;
+    if (B_INA219_MOTORE_OK) {
+        G_tensione_motore_v = tensioneMotore_V;
+        G_corrente_motore_ma = sensoreMotore.getCurrent_mA();
+        G_carica_consumata_motore += G_corrente_motore_ma * dt_ore;
+
+        G_carica_rimanente_motore_percentuale =
+            ((CAPACITA_MOTORE_mAh - G_carica_consumata_motore) / CAPACITA_MOTORE_mAh) * 100.0f;
+
+        G_autonomia_motore_residua = G_corrente_motore_ma > 0.0f
+            ? (CAPACITA_MOTORE_mAh - G_carica_consumata_motore) / G_corrente_motore_ma
+            : -1.0f;
     }
-    
-    // 6. Gestione Alimentazione (Sicurezza e Failover)
-    if (!alimentazioneSicurezza) {
-        batteriaBassaTeensy = false;
-        batteriaBassaMotore = false;
+
+    B_INA219_OK = B_INA219_MOTORE_OK && B_INA219_TEENSY_OK &&
+                  B_INA219_INT_SX_OK && B_INA219_INT_DX_OK &&
+                  B_INA219_EST_SX_OK && B_INA219_EST_DX_OK;
+
+    static bool b_corrente_motore_eccessiva_precedente = false;
+    B_corrente_motore_eccessiva = B_INA219_MOTORE_OK &&
+        (G_corrente_motore_ma > CORRENTE_MOTORE_MAX_PLAUSIBILE_mA);
+
+    if (B_corrente_motore_eccessiva != b_corrente_motore_eccessiva_precedente) {
+        inviaMessaggioAvionica(B_corrente_motore_eccessiva
+            ? "ATTENZIONE: corrente motore eccessiva rilevata"
+            : "Corrente motore rientrata nei limiti plausibili");
+        b_corrente_motore_eccessiva_precedente = B_corrente_motore_eccessiva;
+    }
+
+    if (!B_alimentazione_sicurezza) {
+        B_batteria_bassa_teensy = false;
+        B_batteria_bassa_motore = false;
     } else {
-        // FIX (obiettivo 2): edge detection sui due allarmi batteria, prima silenziosi.
-        // Una batteria bassa non segnalata via radio è il classico modo in cui un volo finisce
-        // prima del previsto senza che a terra ce ne si accorga in tempo.
-        bool batteriaBassaTeensyPrecedente = batteriaBassaTeensy;
-        bool batteriaBassaMotorePrecedente = batteriaBassaMotore;
+        if (B_INA219_TEENSY_OK) {
+            bool b_precedente = B_batteria_bassa_teensy;
+            B_batteria_bassa_teensy = (G_tensione_teensy_v < VALORE_BATT_TEENSY_BASSA_V);
 
-        // Controllo Batteria Teensy
-        batteriaBassaTeensy = (vTeensy < VALORE_BATT_TEENSY_BASSA_V);
-        
-        if (batteriaBassaTeensy && !batteriaBassaTeensyPrecedente) {
-            inviaMessaggioAvionica("ATTENZIONE: batteria Teensy bassa, commutazione su batteria motore apertura relè");
-        }
+            if (B_batteria_bassa_teensy && !b_precedente) {
+                inviaMessaggioAvionica("ATTENZIONE: batteria Teensy bassa, commutazione su batteria motore apertura rele");
+            }
 
-        if (batteriaBassaTeensy) {
-            if (!releAttivato) {
-                digitalWrite(PIN_RELE, HIGH);   // Attiva il relè: la batteria motore subentra
-                releAttivato = true;
+            if (B_batteria_bassa_teensy && !B_rele_attivato) {
+                digitalWrite(PIN_RELE, HIGH);
+                B_rele_attivato = true;
                 inviaMessaggioAvionica("Rele' alimentazione ATTIVATO (failover su batteria motore)");
             }
         }
 
-        // Controllo Batteria Motore
-        batteriaBassaMotore = (vMotore < VALORE_BATT_MOTORE_BASSA_V);
-        if (batteriaBassaMotore && !batteriaBassaMotorePrecedente) {
-            inviaMessaggioAvionica("ATTENZIONE: batteria motore bassa, considerare atterraggio, semo fottuti");
+        if (B_INA219_MOTORE_OK) {
+            bool b_precedente = B_batteria_bassa_motore;
+            B_batteria_bassa_motore = (G_tensione_motore_v < VALORE_BATT_MOTORE_BASSA_V);
+
+            if (B_batteria_bassa_motore && !b_precedente) {
+                inviaMessaggioAvionica("ATTENZIONE: batteria motore bassa, considerare atterraggio");
+            }
         }
     }
-    
-    TEMPO_BATTERIA_PRECEDENTE_ms = tempo_attuale;
+
+    G_tempo_batteria_precedente_ms = tempo_attuale_ms;
 }
 
 void gestisciSchianto() {
-    if (!schiantoSicurezza) {
-        statoSchiantoRilevato = false;
+    if (!B_schianto_sicurezza) {
+        B_stato_schianto_rilevato = false;
         return;
     }
-    if (statoSchiantoRilevato) {
-        motore.writeMicroseconds(GAS_NEUTRO_us); // Mantiene il motore spento
+    if (B_stato_schianto_rilevato) {
+        scriviMotore(GAS_NEUTRO_us);
         return;
     }
 
-    if (!droneInVolo) return; // Non controlla schianti a terra
+    if (!B_drone_in_volo) return;
+    if (!B_BNO055_OK) return;
 
     imu::Vector<3> accel = giroscopio.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
     float accelerazioneTotale_ms2 = sqrt((accel.x() * accel.x()) + (accel.y() * accel.y()) + (accel.z() * accel.z()));
-
-    // Salvataggio per diagnostica/telemetria
-    ACCEL_X_ms2 = accel.x();
-    ACCEL_Y_ms2 = accel.y();
-    ACCEL_Z_ms2 = accel.z();
-    ACCEL_TOTALE_ms2 = accelerazioneTotale_ms2;
-
-    static unsigned long tempoInizioPicco_ms = 0;
-    static bool piccoInCorso = false;
+static unsigned long tempoInizioPicco_ms = 0;
+    static bool b_picco_in_corso = false;
     unsigned long tempoAttuale_ms = millis();
     
     
-    const float SOGLIA_VELOCITA_CRITICA_ms = 5.0f;      
-
     if (accelerazioneTotale_ms2 > SOGLIA_ACCELERAZIONE_SCHIANTO_ms2) {
-        if (!piccoInCorso) {
-            // È il primissimo frame in cui rileviamo l'anomalia. Facciamo partire il cronometro.
-            piccoInCorso = true;
+        if (!b_picco_in_corso) {
+            b_picco_in_corso = true;
             tempoInizioPicco_ms = tempoAttuale_ms;
         } else {
-            // Il picco persiste. Controlliamo da quanto tempo.
             if ((tempoAttuale_ms - tempoInizioPicco_ms) >= TEMPO_CONFERMA_SCHIANTO_ms) {
-                if (VELOCITA_ARIA_ms < SOGLIA_VELOCITA_CRITICA_ms) {
+                if (G_velocita_aria_ms < SOGLIA_VELOCITA_CRITICA_SCHIANTO_ms) {
                     
                     inviaMessaggioAvionica("CRITICAL: SCHIANTO CONFERMATO ");
-                    statoSchiantoRilevato = true;
-                    schiantoBloccato = true;
+                    B_stato_schianto_rilevato = true;
+                    B_schianto_bloccato = true;
                     inviaMessaggioAvionica("CRITICAL: DISATTIVO SERVI E MOTORE");
-                    motore.writeMicroseconds(GAS_NEUTRO_us);
+                    scriviMotore(GAS_NEUTRO_us);
                     servoInternoSX.detach();
                     servoInternoDX.detach();
                     servoEsternoSX.detach();
@@ -1300,23 +1763,22 @@ void gestisciSchianto() {
             }
         }
     } else {
-        // L'accelerazione è tornata sotto la soglia. Reset pulito del timer.
-        piccoInCorso = false;
+        b_picco_in_corso = false;
     }
 }
 
 void verificaDroneInVolo() {
-    if (!droneInVolo) {
-        bool velocitaSufficiente   = (VELOCITA_ARIA_ms > SOGLIA_VELOCITA_DECOLLO_ms);
-        bool altitudineSufficiente = (ALTITUDINE_m > SOGLIA_ALTITUDINE_DECOLLO_m);
+    if (!B_drone_in_volo) {
+        bool b_velocita_sufficiente   = (G_velocita_aria_ms > SOGLIA_VELOCITA_DECOLLO_ms);
+        bool b_altitudine_sufficiente = (G_altitudine_m > SOGLIA_ALTITUDINE_DECOLLO_m);
 
-        if (velocitaSufficiente && altitudineSufficiente) {
+        if (b_velocita_sufficiente && b_altitudine_sufficiente) {
             if (TIMESTAMP_DECOLLO_ms == 0) {
                 TIMESTAMP_DECOLLO_ms = millis();
             }
             if (millis() - TIMESTAMP_DECOLLO_ms >= TEMPO_DECOLLO_SICURO_ms) {
                 inviaMessaggioAvionica("velocita e altitudine di decollo confermate");
-                droneInVolo = true;
+                B_drone_in_volo = true;
                 TIMESTAMP_DECOLLO_ms = 0;
                 inviaMessaggioAvionica("DECOLLO CONFERMATO: drone in volo, monitoraggio schianto attivo");
             }
@@ -1327,163 +1789,132 @@ void verificaDroneInVolo() {
 }
 
 void gestisciAllarmi() {
-    // 1. EMERGENZA CRITICA: guasto servi (tutti i LED accesi fissi come segnale univoco di emergenza)
-    if (!estSxOk || !estDxOk || !intSxOk || !intDxOk) {
+    if (!B_SERVO_EST_SX_OK || !B_SERVO_EST_DX_OK || !B_SERVO_INT_SX_OK || !B_SERVO_INT_DX_OK) {
         digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
         digitalWrite(PIN_LED_VERDE_GPS, HIGH);
         digitalWrite(PIN_LED_BLU_PID, HIGH);
         return;
     }
-    // 2. LED ROSSO: allarmi (batteria motore bassa o failsafe radio)
-    digitalWrite(PIN_LED_ROSSO_ALARM, (batteriaBassaMotore || failsafe) ? HIGH : LOW);
+    digitalWrite(PIN_LED_ROSSO_ALARM, (B_batteria_bassa_motore || B_failsafe) ? HIGH : LOW);
 
-    // 3. LED VERDE: stato fix GPS
-    digitalWrite(PIN_LED_VERDE_GPS, Errore_gps>0 ? HIGH : LOW);
+    digitalWrite(PIN_LED_VERDE_GPS, gpsValido() ? HIGH : LOW);
 
-    // 4. LED BLU: modalità di volo (acceso = AUTO)
-    digitalWrite(PIN_LED_BLU_PID, (global_modalitaVolo == 2) ? HIGH : LOW);
+    digitalWrite(PIN_LED_BLU_PID, (G_modalita_volo == 2) ? HIGH : LOW);
 }
 
 void aggiornaDiagnosticaIMU() {
-    giroscopio.getCalibration(&IMU_CAL_SYS, &IMU_CAL_GYRO, &IMU_CAL_ACCEL, &IMU_CAL_MAG);
+    if (!B_BNO055_INIZIALIZZATO) {
+        G_imu_cal_sys = G_imu_cal_gyro = G_imu_cal_accel = G_imu_cal_mag = 0;
+        return;
+    }
+
+    giroscopio.getCalibration(&G_imu_cal_sys, &G_imu_cal_gyro, &G_imu_cal_accel, &G_imu_cal_mag);
 }
 
 
+// Invia lo stato corrente alla stazione di terra.
+// Non riceve parametri: legge direttamente lo stato globale aggiornato nel loop.
+void inviaTelemetria() {
+TELEMETRIA.print("$,");
 
-void inviaTelemetria(float pitch_deg, float roll_deg, float yaw_deg,
-                     float velAria_kmh, float velSuoloGps_kmh,
-                     int outPitch_deg, int outRoll_deg, int outGas_us) {
+    TELEMETRIA.print(G_modalita_volo); TELEMETRIA.print(",");
+    TELEMETRIA.print(B_drone_in_volo ? "1" : "0"); TELEMETRIA.print(","); 
+    TELEMETRIA.print(B_failsafe ? "1" : "0"); TELEMETRIA.print(","); 
+    TELEMETRIA.print(B_stato_schianto_rilevato ? "1" : "0"); TELEMETRIA.print(","); 
+    TELEMETRIA.print(B_BNO055_OK? "1":"0");TELEMETRIA.print(",");
+    TELEMETRIA.print(B_PMW3901_OK? "1":"0");TELEMETRIA.print(",");
+    TELEMETRIA.print(B_BMP390_OK? "1":"0");TELEMETRIA.print(",");
+    TELEMETRIA.print(B_INA219_OK? "1":"0");TELEMETRIA.print(",");
+    TELEMETRIA.print(B_GPS_OK? "1":"0");TELEMETRIA.print(",");
+    TELEMETRIA.print(G_imu_cal_sys); TELEMETRIA.print(",");
+    TELEMETRIA.print(G_imu_cal_gyro); TELEMETRIA.print(",");
+    TELEMETRIA.print(G_imu_cal_accel); TELEMETRIA.print(",");
+    TELEMETRIA.print(G_imu_cal_mag); TELEMETRIA.print(",");
 
-    // NOTA: le tensioni/correnti NON vengono più rilette qui (evitava letture I2C ridondanti
-    // e una variabile locale "vTeensy" che oscurava quella globale). Si riusano i valori
-    // globali già aggiornati una volta per ciclo da gestisciAlimentazione().
-    float vIntSX  = sensoreIntSX.getBusVoltage_V();
-    float vIntDX  = sensoreIntDX.getBusVoltage_V();
-    float vEstSX  = sensoreEstSX.getBusVoltage_V();
-    float vEstDX  = sensoreEstDX.getBusVoltage_V();
-
-    TELEMETRIA.print("$,"); // 0. Start indicatore pacchetto TEL1
-
-    // --- STATO E ALLARMI ---
-    TELEMETRIA.print(global_modalitaVolo); TELEMETRIA.print(",");
-    TELEMETRIA.print(droneInVolo ? "1" : "0"); TELEMETRIA.print(","); 
-    TELEMETRIA.print(failsafe ? "1" : "0"); TELEMETRIA.print(","); 
-    TELEMETRIA.print(statoSchiantoRilevato ? "1" : "0"); TELEMETRIA.print(","); 
-    TELEMETRIA.print(imuPronto? "1":"0");TELEMETRIA.print(",");
-    TELEMETRIA.print(flussoOtticoOk? "1":"0");TELEMETRIA.print(",");
-    TELEMETRIA.print(baroPronto? "1":"0");TELEMETRIA.print(",");
-    TELEMETRIA.print(sensoriCorrenteOk? "1":"0");TELEMETRIA.print(",");
-    TELEMETRIA.print(gpsOk? "1":"0");TELEMETRIA.print(",");
-    // FIX (obiettivo 2): prima veniva trasmesso solo IMU_CAL_SYS, che da solo non basta a capire
-    // COSA non è ancora calibrato (giroscopio/accelerometro/magnetometro hanno dinamiche diverse).
-    // Aggiunti i 3 sotto-livelli di calibrazione, già letti da aggiornaDiagnosticaIMU() ma mai inviati.
-    TELEMETRIA.print(IMU_CAL_SYS); TELEMETRIA.print(",");
-    TELEMETRIA.print(IMU_CAL_GYRO); TELEMETRIA.print(",");
-    TELEMETRIA.print(IMU_CAL_ACCEL); TELEMETRIA.print(",");
-    TELEMETRIA.print(IMU_CAL_MAG); TELEMETRIA.print(",");
-
-    // --- ALIMENTAZIONE (Volt, V) ---
-    TELEMETRIA.print(vMotore, 2); TELEMETRIA.print(","); 
-    TELEMETRIA.print(vTeensy, 2); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_tensione_motore_v, 2); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_tensione_teensy_v, 2); TELEMETRIA.print(","); 
 
     TELEMETRIA.print(G_carica_rimanente_teensy_percentuale, 2);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(G_carica_rimanente_MOTORE_percentuale, 2);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_carica_rimanente_motore_percentuale, 2);  TELEMETRIA.print(","); 
     TELEMETRIA.print(G_autonomia_teensy_residua, 2);  TELEMETRIA.print(","); 
     TELEMETRIA.print(G_autonomia_motore_residua, 2);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(iTeensy, 2);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(iMotore, 2);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(vIntSX, 2);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(vIntDX, 2);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(vEstSX, 2);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(vEstDX, 2);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(servoSicurezza ? "1" : "0"); TELEMETRIA.print(",");
+    TELEMETRIA.print(G_corrente_teensy_ma, 2);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_corrente_motore_ma, 2);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(B_corrente_motore_eccessiva ? "1" : "0"); TELEMETRIA.print(",");
+    TELEMETRIA.print(G_tensione_servo_int_sx_v, 2);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_tensione_servo_int_dx_v, 2);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_tensione_servo_est_sx_v, 2);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_tensione_servo_est_dx_v, 2);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(B_servo_sicurezza ? "1" : "0"); TELEMETRIA.print(",");
 
-    // --- ASSETTO E QUOTA (IMU) ---
-    TELEMETRIA.print(pitch_deg, 1); TELEMETRIA.print(","); 
-    TELEMETRIA.print(roll_deg, 1);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(yaw_deg, 1);   TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_pitch_deg, 1); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_roll_deg, 1);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_yaw_deg, 1);   TELEMETRIA.print(","); 
             
-    TELEMETRIA.print(ALTITUDINE_m, 1); TELEMETRIA.print(","); 
-    TELEMETRIA.print(ALTITUDINE_LIDAR_m, 2); TELEMETRIA.print(","); 
-    TELEMETRIA.print(ALTITUDINE_BARO_m, 2);  TELEMETRIA.print(","); 
-    // FIX (obiettivo 2): la quota TARGET non veniva mai trasmessa. Senza questo dato il PFD a terra
-    // non può disegnare il "bug" di quota target rispetto alla quota reale.
-    TELEMETRIA.print(ALTITUDINE_TARGET_m, 1); TELEMETRIA.print(",");
+    TELEMETRIA.print(G_altitudine_m, 1); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_altitudine_lidar_m, 2); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_altitudine_baro_m, 2);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_altitudine_target_m, 1); TELEMETRIA.print(",");
+    TELEMETRIA.print(G_velocita_verticale_ms, 2); TELEMETRIA.print(",");
+    TELEMETRIA.print(B_sink_rate_eccessivo ? "1" : "0"); TELEMETRIA.print(",");
 
-    // --- VELOCITÀ ---
-    TELEMETRIA.print(velAria_kmh, 1);      TELEMETRIA.print(","); 
-    TELEMETRIA.print(velSuoloGps_kmh, 1);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(VENTO_VELOCITA_ms * 3.6f, 1);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(VENTO_DIREZIONE_deg, 1);       TELEMETRIA.print(","); 
-    TELEMETRIA.print(VELOCITA_CROCIERA_kmh, 1);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(VELOCITA_AVVICINAMENTO_kmh, 1);       TELEMETRIA.print(","); 
+    TELEMETRIA.print((G_velocita_aria_ms * 3.6f), 1);      TELEMETRIA.print(","); 
+    TELEMETRIA.print((G_velocita_suolo_ms * 3.6f), 1);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_vento_velocita_ms * 3.6f, 1);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_vento_direzione_deg, 1);       TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_velocita_crociera_kmh, 1);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_velocita_avvicinamento_kmh, 1);       TELEMETRIA.print(","); 
 
 
-    // --- NAVIGAZIONE ---
-    TELEMETRIA.print(DISTANZA_TARGET_m, 0); TELEMETRIA.print(","); 
-    TELEMETRIA.print(ROTTA_TARGET_deg, 1);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(ROLL_TARGET_deg, 1);   TELEMETRIA.print(","); 
-    TELEMETRIA.print(rottaAttuale_deg, 1);     TELEMETRIA.print(",");
+    TELEMETRIA.print(G_distanza_target_m, 0); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_rotta_target_deg, 1);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_roll_target_deg, 1);   TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_rotta_attuale_deg, 1);     TELEMETRIA.print(",");
 
-    // --- INPUT RADIOCOMANDO ---
-    TELEMETRIA.print(canaliRC[1]); TELEMETRIA.print(","); 
-    TELEMETRIA.print(canaliRC[0]); TELEMETRIA.print(","); 
-    TELEMETRIA.print(canaliRC[2]); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_canali_rc[1]); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_canali_rc[0]); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_canali_rc[2]); TELEMETRIA.print(","); 
 
-    // --- OUTPUT PID/MIXER ---
-    // FIX: outPitch_deg è un int (non un float): il secondo argomento ",1" veniva
-    // interpretato da Print come BASE numerica (non decimali) -> valore trasmesso sbagliato.
-    TELEMETRIA.print(outPitch_deg); TELEMETRIA.print(","); 
-    TELEMETRIA.print(outRoll_deg);  TELEMETRIA.print(","); 
-    TELEMETRIA.print(outGas_us);    TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_comando_pitch_deg); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_comando_roll_deg);  TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_comando_gas_us);    TELEMETRIA.print(","); 
 
-    // --- POSIZIONE FISICA ATTUALE SERVI ---
     TELEMETRIA.print(servoInternoSX.read()); TELEMETRIA.print(","); 
     TELEMETRIA.print(servoInternoDX.read()); TELEMETRIA.print(","); 
     TELEMETRIA.print(servoEsternoSX.read()); TELEMETRIA.print(","); 
     TELEMETRIA.print(servoEsternoDX.read()); TELEMETRIA.print(","); 
 
-    // --- TEMPERATURE (°C) E LIMITI ---
-    TELEMETRIA.print(limitazioneTermicaAttiva ? "1" : "0"); TELEMETRIA.print(",");
-    TELEMETRIA.print(TEMPERATURA_MOTORE_C, 1);    TELEMETRIA.print(","); 
-    TELEMETRIA.print(TEMPERATURA_FUSOLIERA_C, 1); TELEMETRIA.print(","); 
-    TELEMETRIA.print(TEMPERATURA_ESTERNA_C, 1);   TELEMETRIA.print(","); 
-    TELEMETRIA.print(TEMPERATURA_ESC_C, 1);       TELEMETRIA.print(","); 
-    TELEMETRIA.print(GAS_LIMITE_TERMICO_us);      TELEMETRIA.print(","); 
+    TELEMETRIA.print(B_limitazione_termica_attiva ? "1" : "0"); TELEMETRIA.print(",");
+    TELEMETRIA.print(G_temperatura_motore_c, 1);    TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_temperatura_fusoliera_c, 1); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_temperatura_esterna_c, 1);   TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_temperatura_esc_c, 1);       TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_gas_limite_termico_us);      TELEMETRIA.print(","); 
 
-    // --- SATELLITI E COORDINATE GPS ---
-    // FIX: "errore_gps" non esisteva (refuso) -> "Errore_gps"
-    if (Errore_gps>0) {
-        // FIX: numero_satelliti è un int: ",1" veniva letto come BASE, non come decimali -> rimosso.
-        TELEMETRIA.print(numero_satelliti); TELEMETRIA.print(","); 
-        TELEMETRIA.print(DRONE_LAT_deg, 6);  TELEMETRIA.print(","); 
-        TELEMETRIA.print(DRONE_LON_deg, 6);  TELEMETRIA.print(","); 
+    if (gpsValido()) {
+        TELEMETRIA.print(G_numero_satelliti); TELEMETRIA.print(","); 
+        TELEMETRIA.print(G_drone_lat_deg, 6);  TELEMETRIA.print(","); 
+        TELEMETRIA.print(G_drone_lon_deg, 6);  TELEMETRIA.print(","); 
         
-        // FIX: stesso problema per Errore_gps (int, non float) -> rimosso ",1"
-        TELEMETRIA.print(Errore_gps);     TELEMETRIA.print(","); 
+        TELEMETRIA.print(G_errore_gps);     TELEMETRIA.print(","); 
         
-        TELEMETRIA.print(ERRORE_ROTTA_deg, 1);    TELEMETRIA.print(","); 
+        TELEMETRIA.print(G_errore_rotta_deg, 1);    TELEMETRIA.print(","); 
     } else {
         TELEMETRIA.print("0,0.0,0.0,-1.0,0.0,"); 
     }
     
-    // --- STATI FINALI ---
-    TELEMETRIA.print(alimentazioneSicurezza ? "1" : "0"); TELEMETRIA.print(",");
-    TELEMETRIA.print(releAttivato ? "1" : "0");           TELEMETRIA.print(",");
-    TELEMETRIA.print(motoreDisabilitatoDaTerra ? "1" : "0"); TELEMETRIA.print(",");
+    TELEMETRIA.print(B_alimentazione_sicurezza ? "1" : "0"); TELEMETRIA.print(",");
+    TELEMETRIA.print(B_rele_attivato ? "1" : "0");           TELEMETRIA.print(",");
+    TELEMETRIA.print(B_motore_disabilitato_da_terra ? "1" : "0"); TELEMETRIA.print(",");
 
-    // --- FLUSSO OTTICO ---
-    TELEMETRIA.print(VELOCITA_OTTICA_X_ms, 2); TELEMETRIA.print(","); 
-    TELEMETRIA.print(VELOCITA_OTTICA_Y_ms, 2); // Ultimo dato senza virgola finale
+    TELEMETRIA.print(G_velocita_ottica_x_ms, 2); TELEMETRIA.print(","); 
+    TELEMETRIA.print(G_velocita_ottica_y_ms, 2);
 
-    TELEMETRIA.println(); // Chiusura pacchetto (CRLF)
+    TELEMETRIA.println();
+
 }
 
-// Legge comandi testuali (terminati da '\n') sia da USB (Serial) che da LoRa (TELEMETRIA) e li passa al parser
 void comandiDaTerra() {
-    // FIX: prima c'era un unico buffer condiviso tra le due porte seriali.
-    // Se arrivavano byte da entrambe nella stessa finestra, i caratteri si
-    // mescolavano corrompendo il comando. Ora ogni porta ha il suo buffer.
     static String buffer[2] = { "", "" };
     Stream* fonti[] = { &TELEMETRIA, &Serial };
     for (int i = 0; i < 2; i++) {
@@ -1491,260 +1922,344 @@ void comandiDaTerra() {
         while (porta->available()) {
             char c = porta->read();
             if (c == '\n') {
-                segnalaOK();               // Beep di conferma ricezione riga di comando
-                elaboraComando(buffer[i]); // Interpreta il comando accumulato
+                // Riga completa: la passiamo al parser dei comandi.
+                elaboraComando(buffer[i]);
+
+                // Svuotiamo il buffer per il comando successivo.
                 buffer[i] = "";
             } else {
                 buffer[i] += c;
-                if (buffer[i].length() > 64) buffer[i] = "";   // Protezione overflow: scarta il buffer se supera 64 caratteri senza newline
+                if (buffer[i].length() > 64) buffer[i] = "";
             }
         }
     }
 }
 
-//  PARSER COMANDI --------------------------------------------------------------------
+// Interpreta un comando ricevuto da Serial o telemetria.
+//
+// Formato:
+//     CMD:NOME_COMANDO:VALORE
+//
+// Non esistono piu' ACK/NACK e non e' possibile modificare Kp/Ki/Kd da terra.
+// Ogni comando stampa semplicemente un messaggio leggibile con inviaMessaggioAvionica().
 void elaboraComando(const String& cmd) {
-    if (!cmd.startsWith("CMD:")) return;   // Tutti i comandi validi iniziano con "CMD:"
+    // Ignoriamo tutto cio' che non inizia con "CMD:".
+    if (!cmd.startsWith("CMD:")) {
+        return;
+    }
 
-    int sep = cmd.indexOf(':', 4);   // Cerca il secondo ":" che separa il nome campo dal valore
-    if (sep < 0) return;
+    // Cerchiamo i due punti che separano nome e valore.
+    int separatore = cmd.indexOf(':', 4);
 
-    String campo     = cmd.substring(4, sep);
-    String valoreStr = cmd.substring(sep + 1);
-    int    val       = valoreStr.toInt();
+    // Se manca il separatore il comando e' incompleto.
+    if (separatore < 0) {
+        inviaMessaggioAvionica("Comando non valido");
+        return;
+    }
 
-    // Servi: posizione (gradi, vincolati 45-135)
+    // Nome del comando.
+    String campo = cmd.substring(4, separatore);
+
+    // Parte dopo il secondo ':'.
+    String valoreStr = cmd.substring(separatore + 1);
+
+    // Versione intera, utile per servi, modalita' e gas.
+    int valore = valoreStr.toInt();
+
+
+    // ========================================================
+    // SERVI
+    // ========================================================
+
     if (campo == "SERVO_ISX") {
-        servoInternoSX.write(constrain(val, 45, 135));
-        inviaAck(campo, valoreStr);
+        servoInternoSX.write(constrain(valore, 45, 135));
+        inviaMessaggioAvionica("Servo interno SX comandato");
+    }
+    else if (campo == "SERVO_IDX") {
+        servoInternoDX.write(constrain(valore, 45, 135));
+        inviaMessaggioAvionica("Servo interno DX comandato");
+    }
+    else if (campo == "SERVO_ESX") {
+        servoEsternoSX.write(constrain(valore, 45, 135));
+        inviaMessaggioAvionica("Servo esterno SX comandato");
+    }
+    else if (campo == "SERVO_EDX") {
+        servoEsternoDX.write(constrain(valore, 45, 135));
+        inviaMessaggioAvionica("Servo esterno DX comandato");
+    }
 
-    } else if (campo == "SERVO_IDX") {
-        servoInternoDX.write(constrain(val, 45, 135));
-        inviaAck(campo, valoreStr);
-
-    } else if (campo == "SERVO_ESX") {
-        servoEsternoSX.write(constrain(val, 45, 135));
-        inviaAck(campo, valoreStr);
-
-    } else if (campo == "SERVO_EDX") {
-        servoEsternoDX.write(constrain(val, 45, 135));
-        inviaAck(campo, valoreStr);
-
-    // Servi: attach/detach manuale da terra
-    } else if (campo == "SERVO_ISX_ATTACH") {
+    else if (campo == "SERVO_ISX_ATTACH") {
         servoInternoSX.attach(PIN_INT_SX);
-        inviaAck(campo, "");
-
-    } else if (campo == "SERVO_IDX_ATTACH") {
+        inviaMessaggioAvionica("Servo interno SX collegato");
+    }
+    else if (campo == "SERVO_IDX_ATTACH") {
         servoInternoDX.attach(PIN_INT_DX);
-        inviaAck(campo, "");
-
-    } else if (campo == "SERVO_ESX_ATTACH") {
+        inviaMessaggioAvionica("Servo interno DX collegato");
+    }
+    else if (campo == "SERVO_ESX_ATTACH") {
         servoEsternoSX.attach(PIN_EST_SX);
-        inviaAck(campo, "");
-
-    } else if (campo == "SERVO_EDX_ATTACH") {
+        inviaMessaggioAvionica("Servo esterno SX collegato");
+    }
+    else if (campo == "SERVO_EDX_ATTACH") {
         servoEsternoDX.attach(PIN_EST_DX);
-        inviaAck(campo, "");
+        inviaMessaggioAvionica("Servo esterno DX collegato");
+    }
 
-    } else if (campo == "SERVO_ISX_DETACH") {
+    else if (campo == "SERVO_ISX_DETACH") {
         servoInternoSX.detach();
-        inviaAck(campo, "");
-
-    } else if (campo == "SERVO_IDX_DETACH") {
+        inviaMessaggioAvionica("Servo interno SX scollegato");
+    }
+    else if (campo == "SERVO_IDX_DETACH") {
         servoInternoDX.detach();
-        inviaAck(campo, "");
-
-    } else if (campo == "SERVO_ESX_DETACH") {
+        inviaMessaggioAvionica("Servo interno DX scollegato");
+    }
+    else if (campo == "SERVO_ESX_DETACH") {
         servoEsternoSX.detach();
-        inviaAck(campo, "");
-
-    } else if (campo == "SERVO_EDX_DETACH") {
+        inviaMessaggioAvionica("Servo esterno SX scollegato");
+    }
+    else if (campo == "SERVO_EDX_DETACH") {
         servoEsternoDX.detach();
-        inviaAck(campo, "");
+        inviaMessaggioAvionica("Servo esterno DX scollegato");
+    }
 
-    } else if (campo == "RELE_ON") {
+
+    // ========================================================
+    // RELE' E SICUREZZE
+    // ========================================================
+
+    else if (campo == "RELE_ON") {
         digitalWrite(PIN_RELE, HIGH);
-        releAttivato = true;
-        inviaAck(campo, "");
-
-    } else if (campo == "RELE_OFF") {
+        B_rele_attivato = true;
+        inviaMessaggioAvionica("Rele' attivato");
+    }
+    else if (campo == "RELE_OFF") {
         digitalWrite(PIN_RELE, LOW);
-        releAttivato = false;
-        inviaAck(campo, "");
+        B_rele_attivato = false;
+        inviaMessaggioAvionica("Rele' disattivato");
+    }
 
-    } else if (campo == "SICUREZZA_SCHIANTO_ON") {
-        schiantoSicurezza = true;
-        inviaAck(campo, "");
+    else if (campo == "SICUREZZA_SCHIANTO_ON") {
+        B_schianto_sicurezza = true;
+        inviaMessaggioAvionica("Sicurezza schianto attiva");
+    }
+    else if (campo == "SICUREZZA_SCHIANTO_OFF") {
+        B_schianto_sicurezza = false;
+        inviaMessaggioAvionica("Sicurezza schianto disattiva");
+    }
 
-    } else if (campo == "SICUREZZA_SCHIANTO_OFF") {
-        schiantoSicurezza = false;
-        inviaAck(campo, "");
+    else if (campo == "SICUREZZA_ALIMENTAZIONE_ON") {
+        B_alimentazione_sicurezza = true;
+        inviaMessaggioAvionica("Sicurezza alimentazione attiva");
+    }
+    else if (campo == "SICUREZZA_ALIMENTAZIONE_OFF") {
+        B_alimentazione_sicurezza = false;
+        inviaMessaggioAvionica("Sicurezza alimentazione disattiva");
+    }
 
-    } else if (campo == "SICUREZZA_ALIMENTAZIONE_ON") {
-        alimentazioneSicurezza = true;
-        inviaAck(campo, "");
+    else if (campo == "SICUREZZA_SERVI_ON") {
+        B_servo_sicurezza = true;
+        inviaMessaggioAvionica("Sicurezza servi attiva");
+    }
+    else if (campo == "SICUREZZA_SERVI_OFF") {
+        B_servo_sicurezza = false;
+        inviaMessaggioAvionica("Sicurezza servi disattiva");
+    }
 
-    } else if (campo == "SICUREZZA_ALIMENTAZIONE_OFF") {
-        alimentazioneSicurezza = false;
-        inviaAck(campo, "");
+    else if (campo == "SICUREZZA_TEMP_ON") {
+        B_limitazione_termica_abilitata = true;
+        inviaMessaggioAvionica("Protezione termica attiva");
+    }
+    else if (campo == "SICUREZZA_TEMP_OFF") {
+        B_limitazione_termica_abilitata = false;
+        inviaMessaggioAvionica("Protezione termica disattiva");
+    }
 
-    } else if (campo == "SICUREZZA_SERVI_ON") {
-        servoSicurezza = true;
-        inviaAck(campo, "");
 
-    } else if (campo == "SICUREZZA_SERVI_OFF") {
-        servoSicurezza = false;
-        inviaAck(campo, "");
+    // ========================================================
+    // MOTORE E MODALITA'
+    // ========================================================
 
-    } else if (campo == "SICUREZZA_TEMP_ON") {
-        limitazione_termica_gas = true;
-        inviaAck(campo, "");
+    else if (campo == "GAS") {
+        // Comando pensato per prove manuali da banco.
+        if (B_motore_disabilitato_da_terra) {
+            inviaMessaggioAvionica("GAS rifiutato: motore disabilitato");
+        }
+        else if (G_modalita_volo != 1) {
+            inviaMessaggioAvionica("GAS rifiutato: drone non in modalita' manuale");
+        }
+        else {
+            int gas_us =
+                constrain(valore, GAS_NEUTRO_us, GAS_MASSIMO_us);
 
-    } else if (campo == "SICUREZZA_TEMP_OFF") {
-        limitazione_termica_gas = false;
-        inviaAck(campo, "");
+            scriviMotore(gas_us);
+            inviaMessaggioAvionica("Comando GAS eseguito");
+        }
+    }
 
-    // Gas — solo comandabile manualmente in modalità 1, in microsecondi (us), vincolato tra GAS_NEUTRO_us e GAS_MASSIMO_us
-    } else if (campo == "GAS") {
-        if (motoreDisabilitatoDaTerra) {
-            // FIX (obiettivo 3): se il kill switch software è attivo, il comando GAS manuale
-            // deve essere rifiutato esplicitamente, altrimenti sembrerebbe accettato ma poi
-            // il loop() lo sovrascrive comunque al neutro (comportamento confuso da terra).
-            inviaNack(campo, "motore_disabilitato_da_terra");
-        } else if (global_modalitaVolo == 1) {
-            motore.writeMicroseconds(constrain(val, GAS_NEUTRO_us, GAS_MASSIMO_us));
-            inviaAck(campo, valoreStr);
+    else if (campo == "MODO") {
+        // Sono ammesse solo modalita' 1 e 2 e non si cambia modo in failsafe.
+        if (!B_failsafe && valore >= 1 && valore <= 2) {
+            G_modalita_volo = valore;
+            resettaPID();
+            inviaMessaggioAvionica("Modalita' di volo aggiornata");
         } else {
-            inviaNack(campo, "non_in_manuale");
+            inviaMessaggioAvionica("Cambio modalita' rifiutato");
+        }
+    }
+
+    else if (campo == "STOP_MOTORE") {
+        // Attiviamo il kill switch software.
+        B_motore_disabilitato_da_terra = true;
+
+        // Il motore viene portato immediatamente al neutro.
+        scriviMotore(GAS_NEUTRO_us);
+
+        inviaMessaggioAvionica("MOTORE DISABILITATO DA TERRA");
+    }
+
+    else if (campo == "RIPRISTINA_MOTORE") {
+        B_motore_disabilitato_da_terra = false;
+        inviaMessaggioAvionica("Motore ripristinato");
+    }
+
+
+    // ========================================================
+    // TARGET DI NAVIGAZIONE
+    // ========================================================
+
+    else if (campo == "SET_LATITUDE") {
+        float latitudine_deg = valoreStr.toFloat();
+
+        if (latitudine_deg >= -90.0f && latitudine_deg <= 90.0f) {
+            G_target_lat_deg = latitudine_deg;
+            inviaMessaggioAvionica("Latitudine target aggiornata");
+        } else {
+            inviaMessaggioAvionica("Latitudine rifiutata: fuori limite");
+        }
+    }
+
+    else if (campo == "SET_LONGITUDE") {
+        float longitudine_deg = valoreStr.toFloat();
+
+        if (longitudine_deg >= -180.0f && longitudine_deg <= 180.0f) {
+            G_target_lon_deg = longitudine_deg;
+            inviaMessaggioAvionica("Longitudine target aggiornata");
+        } else {
+            inviaMessaggioAvionica("Longitudine rifiutata: fuori limite");
+        }
+    }
+
+    else if (campo == "SET_ALTITUDE") {
+        float altitudine_m = valoreStr.toFloat();
+
+        if (altitudine_m >= 0.0f && altitudine_m <= ALTITUDINE_MAX_m) {
+            G_altitudine_target_m = altitudine_m;
+            inviaMessaggioAvionica("Altitudine target aggiornata");
+        } else {
+            inviaMessaggioAvionica("Altitudine target rifiutata: fuori limite");
+        }
+    }
+
+    else if (campo == "SET_VEL_CROCIERA") {
+        float velocita_kmh = valoreStr.toFloat();
+
+        if (velocita_kmh >= 20.0f && velocita_kmh <= 150.0f) {
+            G_velocita_crociera_kmh = velocita_kmh;
+            inviaMessaggioAvionica("Velocita' crociera aggiornata");
+        } else {
+            inviaMessaggioAvionica("Velocita' crociera rifiutata");
+        }
+    }
+
+    else if (campo == "SET_VEL_AVVICINAMENTO") {
+        float velocita_kmh = valoreStr.toFloat();
+
+        if (velocita_kmh >= 15.0f && velocita_kmh <= 150.0f) {
+            G_velocita_avvicinamento_kmh = velocita_kmh;
+            inviaMessaggioAvionica("Velocita' avvicinamento aggiornata");
+        } else {
+            inviaMessaggioAvionica("Velocita' avvicinamento rifiutata");
+        }
+    }
+
+
+    // ========================================================
+    // CALIBRAZIONI
+    // ========================================================
+
+    else if (campo == "CALIBRA_IMU") {
+        if (!calibrazioneConsentita()) {
+            inviaMessaggioAvionica("Calibrazione IMU bloccata: drone in volo");
+        }
+        else if (calibraIMU()) {
+            inviaMessaggioAvionica("Calibrazione IMU completata");
+        }
+        else {
+            inviaMessaggioAvionica("Calibrazione IMU fallita o drone mosso");
+        }
+    }
+
+    else if (campo == "CALIBRA_BARO") {
+        if (!calibrazioneConsentita()) {
+            inviaMessaggioAvionica("Calibrazione barometro bloccata: drone in volo");
+        }
+        else if (calibraBarometro()) {
+            inviaMessaggioAvionica("Calibrazione barometro completata");
+        }
+        else {
+            inviaMessaggioAvionica("Calibrazione barometro fallita");
+        }
+    }
+
+    else if (campo == "CALIBRA_PITOT") {
+        if (!calibrazioneConsentita()) {
+            inviaMessaggioAvionica("Calibrazione Pitot bloccata: drone in volo");
+        }
+        else if (calibraPitot()) {
+            inviaMessaggioAvionica("Calibrazione Pitot completata");
+        }
+        else {
+            inviaMessaggioAvionica("Calibrazione Pitot fallita");
+        }
+    }
+
+    else if (campo == "CALIBRA_POST_SCHIANTO") {
+        if (calibraDopoSchianto()) {
+            inviaMessaggioAvionica("Calibrazione post-schianto completata");
         }
 
-    // Modalità di volo (1=Manuale, 2=Auto), rifiutata se in failsafe o valore fuori range
-    } else if (campo == "MODO") {
-        if (!failsafe && val >= 1 && val <= 2) {
-            global_modalitaVolo = val;
-            inviaAck(campo, valoreStr);
-        } else {
-            inviaNack(campo, "valore_non_valido_o_failsafe");
+ else {
+            inviaMessaggioAvionica("Calibrazione post-schianto non consentita o fallita");
         }
-
-    // FIX (obiettivo 3): kill switch software del motore, richiesto esplicitamente ("spegnimento
-    // motore" da terra). Non basta scrivere GAS_NEUTRO_us una volta: il loop() ricalcola il gas
-    // ad ogni ciclo (manuale o PID), quindi serve un flag persistente controllato in loop().
-    } else if (campo == "STOP_MOTORE") {
-        motoreDisabilitatoDaTerra = true;
-        motore.writeMicroseconds(GAS_NEUTRO_us);
-        inviaMessaggioAvionica("MOTORE DISABILITATO DA TERRA (kill switch software attivo)");
-        inviaAck(campo, "");
-
-    } else if (campo == "RIPRISTINA_MOTORE") {
-        motoreDisabilitatoDaTerra = false;
-        inviaMessaggioAvionica("Motore ripristinato, kill switch software disattivato");
-        inviaAck(campo, "");
-
-    } else if (campo == "SET_LATITUDE") {
-        float lat_deg = valoreStr.toFloat();
-        if (lat_deg >= -90.0 && lat_deg <= 90.0) {
-            TARGET_LAT_deg = lat_deg;
-            inviaAck(campo, valoreStr);
-        } else {
-            inviaNack(campo, "fuori_limite");
-        }
-
-    } else if (campo == "SET_LONGITUDE") {
-        float lon_deg = valoreStr.toFloat();
-        if (lon_deg >= -180.0 && lon_deg <= 180.0) {
-            TARGET_LON_deg = lon_deg;
-            inviaAck(campo, valoreStr);
-        } else {
-            inviaNack(campo, "fuori_limite");
-        }
-
-    } else if (campo == "SET_ALTITUDE") {
-        float alt_m = valoreStr.toFloat();
-        if (alt_m >= 0.0 && alt_m <= 500.0) {
-            ALTITUDINE_TARGET_m = alt_m;
-            inviaAck(campo, valoreStr);
-        } else {
-            inviaNack(campo, "fuori_limite");
-        }
+    }
 
 
-    // ─── COMANDI: PARAMETRI OPERATIVI ───
-    } else if (campo == "SET_VEL_CROCIERA") {
-        float v = valoreStr.toFloat();   // km/h
-        if (v >= 20.0 && v <= 150.0) { VELOCITA_CROCIERA_kmh = v; inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_VEL_AVVICINAMENTO") {
-        float v = valoreStr.toFloat();   // km/h
-        if (v >= 15.0 && v <= 150.0) { VELOCITA_AVVICINAMENTO_kmh = v; inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
+    // ========================================================
+    // DIAGNOSTICA
+    // ========================================================
 
-    // ─── COMANDI: SINTONIZZAZIONE GUADAGNI PID DA TERRA ───
-    // FIX (obiettivo 3): i guadagni erano "const" quindi non tarabili a runtime, mentre i limiti
-    // di validazione LIMITE_KP_MAX/KI_MAX/KD_MAX erano già dichiarati in cima al file ma inutilizzati.
-    // Ogni comando valida il segno (guadagno fisicamente sempre >= 0) e il tetto massimo, poi
-    // resetta gli integrali del PID interessato per evitare transitori dovuti al cambio di guadagno.
-    } else if (campo == "SET_KP_ROLL") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KP_MAX) { Kp_roll = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_KI_ROLL") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KI_MAX) { Ki_roll = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_KD_ROLL") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KD_MAX) { Kd_roll = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
+    else if (campo == "REQ_DIAG") {
+        B_forza_invio_diagnostica = true;
+        inviaMessaggioAvionica("Diagnostica richiesta");
+    }
 
-    } else if (campo == "SET_KP_PITCH") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KP_MAX) { Kp_pitch = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_KI_PITCH") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KI_MAX) { Ki_pitch = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_KD_PITCH") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KD_MAX) { Kd_pitch = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-
-    } else if (campo == "SET_KP_ALT") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KP_MAX) { Kp_alt = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_KI_ALT") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KI_MAX) { Ki_alt = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_KD_ALT") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KD_MAX) { Kd_alt = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-
-    } else if (campo == "SET_KP_VEL") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KP_MAX) { Kp_vel = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_KI_VEL") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KI_MAX) { Ki_vel = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-    } else if (campo == "SET_KD_VEL") {
-        float v = valoreStr.toFloat();
-        if (v >= 0.0f && v <= LIMITE_KD_MAX) { Kd_vel = v; resettaPID(); inviaAck(campo, valoreStr); } else inviaNack(campo, "fuori_limite");
-
-    // ─── COMANDI: CONTROLLO/DIAGNOSTICA ───
-    } else if (campo == "REQ_DIAG") {
-        forzaInvioDiagnostica = true;
-        inviaAck(campo, "");
-    } else if (campo == "RESET_PID") {
+    else if (campo == "RESET_PID") {
         resettaPID();
-        inviaAck(campo, "");
-    } else {
-        inviaNack(campo, "comando_sconosciuto");
+        inviaMessaggioAvionica("PID azzerati");
+    }
+
+    else {
+        // I guadagni PID non sono modificabili da terra:
+        // i loro valori esistono soltanto in config.h.
+        inviaMessaggioAvionica("Comando sconosciuto o non consentito");
     }
 }
 
+// ============================================================
+// SETUP MODULARE
+// ============================================================
 
-//  SETUP
-void setup()
-{
-    Serial.begin(115200);
-    Wire.begin();
-    Wire.setClock(400000);
-    Wire1.begin();
-    Wire1.setClock(400000);
-
+void setupSegnalazioni() {
     pinMode(PIN_LED_ROSSO_ALARM, OUTPUT);
     pinMode(PIN_LED_VERDE_GPS, OUTPUT);
     pinMode(PIN_LED_BLU_PID, OUTPUT);
@@ -1757,324 +2272,451 @@ void setup()
     digitalWrite(PIN_BUZZER, LOW);
     digitalWrite(PIN_RELE, LOW);
 
-    // Bip di accensione (sequenza di 3 toni crescenti)
-    tone(PIN_BUZZER, 800,  100); delay(150);
+    tone(PIN_BUZZER, 800, 100);  delay(150);
     tone(PIN_BUZZER, 1200, 100); delay(150);
     tone(PIN_BUZZER, 1600, 150); delay(300);
+}
 
-    
+void setupComunicazioni() {
+    Serial.begin(BAUD_RATE_DEBUG);
+
+    Wire.begin();
+    Wire.setClock(400000);
+    Wire1.begin();
+    Wire1.setClock(400000);
 
     ricevente.begin();
     TELEMETRIA.begin(BAUD_RATE_LORA);
     GPS_SERIAL.begin(BAUD_RATE_GPS);
-    Serial2.begin(BAUD_RATE_LIDAR);
+    LIDAR_SERIAL.begin(BAUD_RATE_LIDAR);
+
     delay(100);
-    inviaMessaggioAvionica("     SISTEMA DRONE — AVVIO IN CORSO     ");
-    while (Serial2.available()) Serial2.read();   // Svuota eventuali byte residui nel buffer seriale del LIDAR
-    inviaMessaggioAvionica("     INIZIALIZZAZIONE SENSORI — ciclo ripetuto fino a MAX_TENTATIVI_INIT   ");
-    while ((!imuPronto || !baroPronto || !pitotCalibrato || !sensoriCorrenteOk || !gpsOk) && tentativiInit < MAX_TENTATIVI_INIT) {
-        tentativiInit++;
-        inviaMessaggioAvionica("  Tentativo ");
-        inviaMessaggioAvionica(String(tentativiInit));
+    while (LIDAR_SERIAL.available()) LIDAR_SERIAL.read();
 
-        // --- Flusso ottico: tentativo di inizializzazione via SPI ---
-        if (!flussoOtticoOk) {
-            inviaMessaggioAvionica("[ ] Flusso Ottico PMW3901 ........... ");
-            if (flussoOttico.begin()) {
-                inviaMessaggioAvionica("[OK] Flusso Ottico PMW3901");
-                flussoOtticoOk = true;
-            } else {
-                inviaMessaggioAvionica("ERRORE sensore flusso ottico (cavi SPI?)");
-                segnalaErrore();
-            }
-        } else {
-            inviaMessaggioAvionica("[OK] Flusso Ottico PMW3901");
+    inviaMessaggioAvionica("     SISTEMA DRONE - AVVIO IN CORSO     ");
+}
+
+bool inizializzaFlussoOttico() {
+    inviaMessaggioAvionica("[ ] Flusso Ottico PMW3901");
+
+    B_PMW3901_INIZIALIZZATO = flussoOttico.begin();
+    B_PMW3901_OK = B_PMW3901_INIZIALIZZATO;
+
+    if (B_PMW3901_OK) {
+        inviaMessaggioAvionica("[OK] Flusso Ottico PMW3901");
+        segnalaOK();
+    } else {
+        inviaMessaggioAvionica("[WARN] Flusso Ottico PMW3901 non disponibile");
+        segnalaErrore();
+    }
+
+    return B_PMW3901_OK;
+}
+
+bool inizializzaLidar() {
+    inviaMessaggioAvionica("[ ] TF-Luna LIDAR");
+
+    B_LIDAR_OK = false;
+    unsigned long inizio_ms = millis();
+
+    while (millis() - inizio_ms < TIMEOUT_INIT_LIDAR_ms) {
+        aggiornaLidar();
+        if (B_LIDAR_OK) break;
+        delay(10);
+    }
+
+    if (B_LIDAR_OK) {
+        B_LIDAR_INIZIALIZZATO = true;
+        inviaMessaggioAvionica("[OK] TF-Luna LIDAR");
+        segnalaOK();
+    } else {
+        inviaMessaggioAvionica("[WARN] TF-Luna LIDAR assente - continuo senza");
+    }
+
+    return B_LIDAR_OK;
+}
+
+bool inizializzaGPS() {
+    inviaMessaggioAvionica("[ ] Modulo GPS");
+
+    unsigned long inizio_ms = millis();
+
+    while (millis() - inizio_ms < TIMEOUT_INIT_GPS_ms) {
+        while (GPS_SERIAL.available() > 0) {
+            gps.encode(GPS_SERIAL.read());
+        }
+    }
+
+    aggiornaGPS();
+
+    if (B_GPS_OK) {
+        inviaMessaggioAvionica("[OK] Modulo GPS operativo, stato=" + String(G_errore_gps));
+        segnalaOK();
+    } else {
+        inviaMessaggioAvionica("ERRORE GPS, stato=" + String(G_errore_gps));
+        segnalaErrore();
+    }
+
+    return B_GPS_OK;
+}
+
+bool inizializzaIMU() {
+    inviaMessaggioAvionica("[ ] IMU BNO055");
+
+    if (!B_BNO055_INIZIALIZZATO) {
+        if (!giroscopio.begin()) {
+            B_BNO055_OK = false;
+            inviaMessaggioAvionica("ERRORE IMU BNO055 (cavi I2C?)");
+            segnalaErrore();
+            return false;
         }
 
-        // --- LIDAR TF-Luna: attende 3000 ms un pacchetto valido con header 0x59 0x59 ---
-        if (!lidarOk) {
-            inviaMessaggioAvionica("[ ] TF-Luna LIDAR .............. ");
-            unsigned long t0 = millis();
-            while (millis() - t0 < 3000) {
-                if (Serial2.available() >= 9) {   // Un pacchetto TF-Luna è lungo 9 byte
-                    if (Serial2.read() == 0x59 && Serial2.peek() == 0x59) {
-                        Serial2.read();
-                        for (int i = 0; i < 7; i++) {
-                            Serial2.read();   // Scarta il resto del pacchetto
-                        }
-                        lidarOk = true;
-                        break;
-                    }
-                }
-            }
-            if (lidarOk) {
-                for (int i = 0; i < 10; i++) {
-                    aggiornaLidar();   // 10 letture per "riscaldare" il filtro EMA sull'altezza LIDAR
-                    delay(20);
-                }
-                inviaMessaggioAvionica("[OK] TF-Luna LIDAR");
-                segnalaOK();
-            } else {
-                inviaMessaggioAvionica("[WARN] TF-Luna LIDAR assente — continuo senza");
-            }
-        } else {
-            inviaMessaggioAvionica("[OK] TF-Luna LIDAR");
-        }
-        // --- 5. GPS: Verifica comunicazione hardware e decodifica stream ---
-        if (!gpsOk) {
-            inviaMessaggioAvionica("[ ] Modulo GPS (UART) ............ ");
-            unsigned long t_gps = millis();
-            while (millis() - t_gps < 1500) {
-                // FIX: "SerialGPS" non esisteva (la seriale del GPS è definita come GPS_SERIAL)
-                while (GPS_SERIAL.available() > 0) {
-                    gps.encode(GPS_SERIAL.read());
-                }
-            }
-            aggiornaGPS();
+        giroscopio.setExtCrystalUse(true);
+        B_BNO055_INIZIALIZZATO = true;
+    }
 
-            if (Errore_gps <= 0) {
-                inviaMessaggioAvionica("ERRORE : ");
-                inviaMessaggioAvionica(String(Errore_gps));
-                segnalaErrore();
-            } else {
-                gpsOk = true;
-                inviaMessaggioAvionica("[OK] Modulo GPS operativo (Stato diagnostico: ");
-                inviaMessaggioAvionica(String(Errore_gps));
-                inviaMessaggioAvionica(")");
-                segnalaOK();
-            }
-        } else {
-            inviaMessaggioAvionica("[OK] Modulo GPS");
-        }
-        // 1. IMU — inizializzazione, calibrazione interna e tara offset
-        if (!imuPronto) {
-            inviaMessaggioAvionica("[ ] IMU BNO055 ................. ");
-            if (giroscopio.begin()) {
-                giroscopio.setExtCrystalUse(true);   // Cristallo esterno per un clock più stabile
-                Serial.println("OK");
+    return calibraIMU();
+}
 
-                // Calibrazione interna: attende che il giroscopio raggiunga almeno 2 su 3
-                inviaMessaggioAvionica("   Calibrazione interna (non muovere)");
-                uint8_t sys, gyro, accel, mag;
-                unsigned long timeout_ms = millis();
-                do {
-                    giroscopio.getCalibration(&sys, &gyro, &accel, &mag);
-                    inviaMessaggioAvionica(".");
+bool calibraIMU() {
+    if (!B_BNO055_INIZIALIZZATO) return false;
 
-                    delay(100);
-                    if (millis() - timeout_ms > 10000) {   // Timeout massimo: 10000 ms
-                        Serial.println(" timeout, continuo");
-                        break;
-                    }
-                } while (gyro < 2);
+    bool b_stato_precedente_ok = B_BNO055_OK;
+    float vecchioOffsetRoll_deg = G_offset_roll_deg;
+    float vecchioOffsetPitch_deg = G_offset_pitch_deg;
+    float vecchioOffsetYaw_deg = G_offset_yaw_deg;
 
-                // Tara: media di IMU_CAMPIONI_TARA campioni per l'offset statico di roll/pitch/yaw
-                inviaMessaggioAvionica("\n   Tara offset in corso...");
-                double sommaRoll_deg  = 0.0;
-                double sommaPitch_deg = 0.0;
-                double sommaYawSin = 0.0;
-                double sommaYawCos = 0.0;
-                for (int i = 0; i < IMU_CAMPIONI_TARA; i++) {
-                    sensors_event_t ev;
-                    giroscopio.getEvent(&ev);
-                    sommaRoll_deg  += ev.orientation.z;   // roll
-                    sommaPitch_deg += ev.orientation.y;   // pitch
-                    float yawRad = radians(ev.orientation.x);
-                    sommaYawSin += sin(yawRad);
-                    sommaYawCos += cos(yawRad);
-                    delay(10);
-                }
-                OFFSET_ROLL_deg  = (float)(sommaRoll_deg  / IMU_CAMPIONI_TARA);
-                OFFSET_PITCH_deg = (float)(sommaPitch_deg / IMU_CAMPIONI_TARA);
-                OFFSET_YAW_deg   = degrees(atan2(sommaYawSin, sommaYawCos));
-                if (OFFSET_YAW_deg < 0.0f) OFFSET_YAW_deg += 360.0f;
+    inviaMessaggioAvionica("Calibrazione IMU: tenere il drone fermo");
 
-                imuPronto = true;
-                segnalaOK();
-                inviaMessaggioAvionica(" imu offsets: roll= ");
-                inviaMessaggioAvionica(String(OFFSET_ROLL_deg, 2));
-                inviaMessaggioAvionica(" ; pitch= ");
-                inviaMessaggioAvionica(String(OFFSET_PITCH_deg, 2));
-                inviaMessaggioAvionica(" ; yaw= ");
-                inviaMessaggioAvionica(String(OFFSET_YAW_deg, 2));
-            } else {
-                inviaMessaggioAvionica("\n ERRORE (cavi I2C?)");
-                segnalaErrore();
-            }
-        } else {
-            inviaMessaggioAvionica(" \n [OK] IMU BNO055");
-        }
+    uint8_t sys = 0, gyro = 0, accel = 0, mag = 0;
+    unsigned long inizio_ms = millis();
 
-        // 2. BAROMETRO — inizializzazione, oversampling, filtro, tara altitudine ASL
-        if (!baroPronto) {
-            inviaMessaggioAvionica("[ ] Barometro BMP390 ....... ");
-            if (barometro.begin_I2C()) {
-                inviaMessaggioAvionica("Settaggio oversempling ....... ");
-                barometro.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
-                barometro.setPressureOversampling(BMP3_OVERSAMPLING_32X);
-                barometro.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
-                barometro.setOutputDataRate(BMP3_ODR_50_HZ);   // 50 Hz
-                delay(100);
+    do {
+        giroscopio.getCalibration(&sys, &gyro, &accel, &mag);
+        delay(100);
+        if (millis() - inizio_ms > TIMEOUT_CALIBRAZIONE_IMU_ms) break;
+    } while (gyro < 2);
 
-                // Letture a vuoto per scartare (le prime letture dopo un cambio config possono essere instabili)
-                for (int j = 0; j < 3; j++) {
-                    barometro.readAltitude(1013.25);   // Pressione di riferimento SLP standard: 1013.25 hPa
-                    delay(25);
-                }
+    double sommaRoll_deg = 0.0;
+    double sommaPitch_deg = 0.0;
+    double sommaYawSin = 0.0;
+    double sommaYawCos = 0.0;
 
-                float sommaAltitudine_m = 0.0;
-                bool erroreCalibrazione = false;
-                inviaMessaggioAvionica("Calibrazione barometro ....... ");
-                for (int i = 0; i < 20; i++) {   // 20 campioni per la media di tara
-                    segnalaCalibrazione(PIN_LED_BLU_PID);
+    float minRoll_deg = 10000.0f;
+    float maxRoll_deg = -10000.0f;
+    float minPitch_deg = 10000.0f;
+    float maxPitch_deg = -10000.0f;
 
-                    float altitudineIstantanea_m = barometro.readAltitude(1013.25);   // Rispetto a 1013.25 hPa
+    for (int i = 0; i < IMU_CAMPIONI_TARA; i++) {
+        sensors_event_t ev;
+        giroscopio.getEvent(&ev);
 
-                    // Validazione hardware: scarta letture fisicamente impossibili (range plausibile: -500..8000 m ASL)
-                    if (altitudineIstantanea_m < -500.0 || altitudineIstantanea_m > 8000.0) {
-                        inviaMessaggioAvionica("\n ERRORE: Lettura barometrica impossibile");
-                        inviaMessaggioAvionica(" Altitudine letta: ");
-                        inviaMessaggioAvionica(String(altitudineIstantanea_m));
-                        inviaMessaggioAvionica(" m");
-
-                        digitalWrite(PIN_LED_BLU_PID, LOW);
-                        erroreCalibrazione = true;
-                        break;
-                    }
-                    sommaAltitudine_m += altitudineIstantanea_m;
-                    delay(25);   // 20 x 25 ms = 500 ms totali di campionamento
-                }
-
-                if (erroreCalibrazione) {
-                    segnalaErrore();
-                    continue;
-                }
-
-                digitalWrite(PIN_LED_BLU_PID, LOW);
-                digitalWrite(PIN_BUZZER, LOW);
-
-                baroPronto = true;
-                float mediaBaroCalibrazione_m = sommaAltitudine_m / 20.0;
-
-                // Se il LIDAR è disponibile ed entrambe le altezze indicano "vicino a terra" (<5 m),
-                // usa il LIDAR per tarare l'offset barometrico
-                if (mediaBaroCalibrazione_m < 5.0 && ALTITUDINE_LIDAR_m < 5.0 && ALTITUDINE_LIDAR_m > 0.0 && lidarOk) {
-                    TARA_ALTITUDINE_BARO_m = mediaBaroCalibrazione_m - ALTITUDINE_LIDAR_m;
-                    inviaMessaggioAvionica("OK (Tara ASL corretta da LIDAR: ");
-                } else {
-                    TARA_ALTITUDINE_BARO_m = mediaBaroCalibrazione_m;
-                    inviaMessaggioAvionica("OK (Tara ASL standard: ");
-                }
-
-                inviaMessaggioAvionica(String(TARA_ALTITUDINE_BARO_m, 1));
-                inviaMessaggioAvionica(" m)");
-                segnalaOK();
-
-            } else {
-                inviaMessaggioAvionica("ERRORE (cavi I2C?)");
-                segnalaErrore();
-            }
-        } else {
-            inviaMessaggioAvionica("[OK] Barometro BMP390");
-        }
-        // 3. PITOT — calibrazione dello zero
-        if (!pitotCalibrato) {
-            inviaMessaggioAvionica("[ ] Pitot (velocita') ...... ");
-            long sommaLetture_adc = 0;
-            inviaMessaggioAvionica("Calibrazione pitot ....... ");
-            for (int i = 0; i < 100; i++) {   // 100 campioni
-                if (i % 10 == 0) {
-                    segnalaCalibrazione(PIN_LED_VERDE_GPS);
-                }
-                sommaLetture_adc += analogRead(PIN_ARIA);
-                delay(10);
-            }
-            digitalWrite(PIN_LED_VERDE_GPS, LOW);
+        if (!isfinite(ev.orientation.x) ||
+            !isfinite(ev.orientation.y) ||
+            !isfinite(ev.orientation.z)) {
+            B_BNO055_OK = b_stato_precedente_ok;
+            digitalWrite(PIN_LED_BLU_PID, LOW);
             digitalWrite(PIN_BUZZER, LOW);
-
-            PITOT_ZERO_adc = sommaLetture_adc / 100.0;
-            if (PITOT_ZERO_adc > 5 && PITOT_ZERO_adc < 1020) {   // Verifica plausibilità
-                pitotCalibrato = true;
-                inviaMessaggioAvionica("OK (zero: ");
-                inviaMessaggioAvionica(String(PITOT_ZERO_adc, 1));
-                inviaMessaggioAvionica(")");
-                segnalaOK();
-            } else {
-                inviaMessaggioAvionica("ERRORE (valore anomalo: ");
-                inviaMessaggioAvionica(String(PITOT_ZERO_adc));
-                inviaMessaggioAvionica(")");
-                segnalaErrore();
-            }
-        } else {
-            inviaMessaggioAvionica("[OK] Pitot");
+            inviaMessaggioAvionica("Calibrazione IMU annullata: lettura non valida");
+            return false;
         }
 
-        // 4. INA219 — verifica che tutti i sensori di corrente/tensione rispondano sul bus I2C
-        sensoriCorrenteOk = true;
-        inviaMessaggioAvionica("[ ] INA219 Batteria motore........ ");
-        if (sensoreMotore.begin()) { inviaMessaggioAvionica("OK"); } else { inviaMessaggioAvionica("ERRORE"); sensoriCorrenteOk = false; }
+        float roll_deg = ev.orientation.z;
+        float pitch_deg = ev.orientation.y;
 
-        inviaMessaggioAvionica("[ ] INA219 Batteria Teensy........ ");
-        if (sensoreTeensy.begin()) { inviaMessaggioAvionica("OK"); } else { inviaMessaggioAvionica("ERRORE"); sensoriCorrenteOk = false; }
+        sommaRoll_deg += roll_deg;
+        sommaPitch_deg += pitch_deg;
 
-        inviaMessaggioAvionica("[ ] INA219 Servo IntSX ..... ");
-        if (sensoreIntSX.begin()) { inviaMessaggioAvionica("OK"); } else { inviaMessaggioAvionica("ERRORE"); sensoriCorrenteOk = false; }
+        float yawRad = radians(ev.orientation.x);
+        sommaYawSin += sin(yawRad);
+        sommaYawCos += cos(yawRad);
 
-        inviaMessaggioAvionica("[ ] INA219 Servo IntDX ..... ");
-        if (sensoreIntDX.begin()) { inviaMessaggioAvionica("OK"); } else { inviaMessaggioAvionica("ERRORE"); sensoriCorrenteOk = false; }
+        minRoll_deg = min(minRoll_deg, roll_deg);
+        maxRoll_deg = max(maxRoll_deg, roll_deg);
+        minPitch_deg = min(minPitch_deg, pitch_deg);
+        maxPitch_deg = max(maxPitch_deg, pitch_deg);
 
-        inviaMessaggioAvionica("[ ] INA219 Servo EstSX ..... ");
-        if (sensoreEstSX.begin()) { inviaMessaggioAvionica("OK"); } else { inviaMessaggioAvionica("ERRORE"); sensoriCorrenteOk = false; }
+        if (i % 20 == 0) segnalaCalibrazione(PIN_LED_BLU_PID);
+        delay(10);
+    }
 
-        inviaMessaggioAvionica("[ ] INA219 Servo EstDX ..... ");
-        if (sensoreEstDX.begin()) { inviaMessaggioAvionica("OK"); } else { inviaMessaggioAvionica("ERRORE"); sensoriCorrenteOk = false; }
+    digitalWrite(PIN_LED_BLU_PID, LOW);
+    digitalWrite(PIN_BUZZER, LOW);
 
-        if (sensoriCorrenteOk) { segnalaOK(); } else { segnalaErrore(); }
+    bool b_drone_mosso =
+        (maxRoll_deg - minRoll_deg > MAX_MOVIMENTO_CALIBRAZIONE_IMU_deg) ||
+        (maxPitch_deg - minPitch_deg > MAX_MOVIMENTO_CALIBRAZIONE_IMU_deg);
 
+    if (b_drone_mosso) {
+        G_offset_roll_deg = vecchioOffsetRoll_deg;
+        G_offset_pitch_deg = vecchioOffsetPitch_deg;
+        G_offset_yaw_deg = vecchioOffsetYaw_deg;
+        B_BNO055_OK = b_stato_precedente_ok;
 
-        if (!imuPronto || !baroPronto || !pitotCalibrato || !sensoriCorrenteOk || !gpsOk) {
-            inviaMessaggioAvionica("\n  >> Sensori mancanti. Nuovo tentativo tra 2s...");
+        inviaMessaggioAvionica("Calibrazione IMU rifiutata: drone mosso durante la tara");
+        segnalaErrore();
+        return false;
+    }
+
+    G_offset_roll_deg = (float)(sommaRoll_deg / IMU_CAMPIONI_TARA);
+    G_offset_pitch_deg = (float)(sommaPitch_deg / IMU_CAMPIONI_TARA);
+    G_offset_yaw_deg = degrees(atan2(sommaYawSin, sommaYawCos));
+    if (G_offset_yaw_deg < 0.0f) G_offset_yaw_deg += 360.0f;
+
+    B_BNO055_OK = true;
+
+    inviaMessaggioAvionica("IMU calibrata: roll=" + String(G_offset_roll_deg, 2) +
+                           " pitch=" + String(G_offset_pitch_deg, 2) +
+                           " yaw=" + String(G_offset_yaw_deg, 2));
+    segnalaOK();
+    return true;
+}
+
+bool inizializzaBarometro() {
+    inviaMessaggioAvionica("[ ] Barometro BMP390");
+
+    if (!B_BMP390_INIZIALIZZATO) {
+        if (!barometro.begin_I2C()) {
+            B_BMP390_OK = false;
+            inviaMessaggioAvionica("ERRORE Barometro BMP390 (cavi I2C?)");
+            segnalaErrore();
+            return false;
+        }
+
+        barometro.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+        barometro.setPressureOversampling(BMP3_OVERSAMPLING_32X);
+        barometro.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+        barometro.setOutputDataRate(BMP3_ODR_50_HZ);
+
+        B_BMP390_INIZIALIZZATO = true;
+        delay(100);
+
+        for (int i = 0; i < 3; i++) {
+            barometro.readAltitude(PRESSIONE_RIFERIMENTO_BARO_hPa);
+            delay(25);
+        }
+    }
+
+    return calibraBarometro();
+}
+
+bool calibraBarometro() {
+    if (!B_BMP390_INIZIALIZZATO) return false;
+
+    inviaMessaggioAvionica("Calibrazione barometro");
+
+    float sommaAltitudine_m = 0.0f;
+
+    for (int i = 0; i < BARO_CAMPIONI_TARA; i++) {
+        float altitudineIstantanea_m = barometro.readAltitude(PRESSIONE_RIFERIMENTO_BARO_hPa);
+
+        bool b_valida = isfinite(altitudineIstantanea_m) &&
+                        altitudineIstantanea_m >= BARO_ALTITUDINE_MIN_PLAUSIBILE_m &&
+                        altitudineIstantanea_m <= BARO_ALTITUDINE_MAX_PLAUSIBILE_m;
+
+        if (!b_valida) {
+            B_BMP390_OK = false;
+            digitalWrite(PIN_LED_BLU_PID, LOW);
+            inviaMessaggioAvionica("ERRORE: lettura barometrica impossibile");
+            segnalaErrore();
+            return false;
+        }
+
+        sommaAltitudine_m += altitudineIstantanea_m;
+        segnalaCalibrazione(PIN_LED_BLU_PID);
+        delay(25);
+    }
+
+    digitalWrite(PIN_LED_BLU_PID, LOW);
+    digitalWrite(PIN_BUZZER, LOW);
+
+    float mediaBaroCalibrazione_m = sommaAltitudine_m / BARO_CAMPIONI_TARA;
+
+    if (mediaBaroCalibrazione_m < 5.0f &&
+        B_LIDAR_OK &&
+        G_altitudine_lidar_m > 0.0f &&
+        G_altitudine_lidar_m < 5.0f) {
+        G_tara_altitudine_baro_m = mediaBaroCalibrazione_m - G_altitudine_lidar_m;
+    } else {
+        G_tara_altitudine_baro_m = mediaBaroCalibrazione_m;
+    }
+
+    B_BMP390_OK = true;
+    inviaMessaggioAvionica("Barometro calibrato, tara=" + String(G_tara_altitudine_baro_m, 1) + " m");
+    segnalaOK();
+    return true;
+}
+
+bool inizializzaPitot() {
+    B_PITOT_INIZIALIZZATO = true;
+    return calibraPitot();
+}
+
+bool calibraPitot() {
+    if (!B_PITOT_INIZIALIZZATO) return false;
+
+    inviaMessaggioAvionica("Calibrazione pitot: nessun flusso d'aria sul sensore");
+
+    long sommaLetture_adc = 0;
+
+    for (int i = 0; i < PITOT_CAMPIONI_TARA; i++) {
+        if (i % 10 == 0) segnalaCalibrazione(PIN_LED_VERDE_GPS);
+        sommaLetture_adc += analogRead(PIN_ARIA);
+        delay(10);
+    }
+
+    digitalWrite(PIN_LED_VERDE_GPS, LOW);
+    digitalWrite(PIN_BUZZER, LOW);
+
+    float nuovoZero_adc = sommaLetture_adc / (float)PITOT_CAMPIONI_TARA;
+
+    if (nuovoZero_adc <= PITOT_ADC_MIN_VALIDO || nuovoZero_adc >= PITOT_ADC_MAX_VALIDO) {
+        B_PITOT_OK = false;
+        inviaMessaggioAvionica("ERRORE Pitot: zero ADC anomalo " + String(nuovoZero_adc, 1));
+        segnalaErrore();
+        return false;
+    }
+
+    G_pitot_zero_adc = nuovoZero_adc;
+    B_PITOT_OK = true;
+
+    inviaMessaggioAvionica("Pitot calibrato, zero=" + String(G_pitot_zero_adc, 1));
+    segnalaOK();
+    return true;
+}
+
+bool inizializzaINA219() {
+    inviaMessaggioAvionica("[ ] INA219 (6 sensori)");
+
+    B_INA219_INIZIALIZZATO = true;
+
+    B_INA219_MOTORE_OK = sensoreMotore.begin();
+    B_INA219_TEENSY_OK = sensoreTeensy.begin();
+    B_INA219_INT_SX_OK = sensoreIntSX.begin();
+    B_INA219_INT_DX_OK = sensoreIntDX.begin();
+    B_INA219_EST_SX_OK = sensoreEstSX.begin();
+    B_INA219_EST_DX_OK = sensoreEstDX.begin();
+
+    inviaMessaggioAvionica(String("INA219 Batteria motore: ") + (B_INA219_MOTORE_OK ? "OK" : "ERRORE"));
+    inviaMessaggioAvionica(String("INA219 Batteria Teensy: ") + (B_INA219_TEENSY_OK ? "OK" : "ERRORE"));
+    inviaMessaggioAvionica(String("INA219 Servo IntSX: ") + (B_INA219_INT_SX_OK ? "OK" : "ERRORE"));
+    inviaMessaggioAvionica(String("INA219 Servo IntDX: ") + (B_INA219_INT_DX_OK ? "OK" : "ERRORE"));
+    inviaMessaggioAvionica(String("INA219 Servo EstSX: ") + (B_INA219_EST_SX_OK ? "OK" : "ERRORE"));
+    inviaMessaggioAvionica(String("INA219 Servo EstDX: ") + (B_INA219_EST_DX_OK ? "OK" : "ERRORE"));
+
+    B_INA219_OK = B_INA219_MOTORE_OK && B_INA219_TEENSY_OK &&
+                  B_INA219_INT_SX_OK && B_INA219_INT_DX_OK &&
+                  B_INA219_EST_SX_OK && B_INA219_EST_DX_OK;
+
+    if (B_INA219_OK) segnalaOK();
+    else segnalaErrore();
+
+    return B_INA219_OK;
+}
+
+bool sensoriCriticiOK() {
+    return B_BNO055_OK &&
+           B_BMP390_OK &&
+           B_PITOT_OK &&
+           B_INA219_OK &&
+           B_GPS_OK;
+}
+
+void setupSensori() {
+    inviaMessaggioAvionica("     INIZIALIZZAZIONE SENSORI     ");
+
+    G_tentativi_init = 0;
+
+    while (!sensoriCriticiOK() && G_tentativi_init < MAX_TENTATIVI_INIT) {
+        G_tentativi_init++;
+        inviaMessaggioAvionica("Tentativo inizializzazione " + String(G_tentativi_init));
+
+        if (!B_PMW3901_INIZIALIZZATO) inizializzaFlussoOttico();
+        if (!B_LIDAR_OK) inizializzaLidar();
+        if (!B_GPS_OK) inizializzaGPS();
+        if (!B_BNO055_OK) inizializzaIMU();
+        if (!B_BMP390_OK) inizializzaBarometro();
+        if (!B_PITOT_OK) inizializzaPitot();
+        if (!B_INA219_OK) inizializzaINA219();
+
+        if (!sensoriCriticiOK() && G_tentativi_init < MAX_TENTATIVI_INIT) {
+            inviaMessaggioAvionica("Sensori critici mancanti. Nuovo tentativo...");
             digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
-            delay(2000);
+            delay(TEMPO_RITENTO_SENSORI_ms);
             digitalWrite(PIN_LED_ROSSO_ALARM, LOW);
         }
     }
 
-    // ERRORE CRITICO — se dopo MAX_TENTATIVI_INIT il modulo GPS non parla con la Teensy, BLOCCO TOTALE
-    if (!imuPronto || !baroPronto || !pitotCalibrato || !sensoriCorrenteOk || !gpsOk) {
-        errore_critico_inizializzazione = true;
-        digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
-        inviaMessaggioAvionica("\n[FATAL ERROR] Fallimento inizializzazione hardware critico. Sistema bloccato.");
-        while (1) {   // Blocco infinito
-            tone(PIN_BUZZER, 2000, 300);
-            delay(400);
-        }
-    }
-    inviaMessaggioAvionica("\n  >> Sensori inizializzati correttamente\n");
-    // TUTTO OK — INIT SERVO
-    inizializzaServo();    // Attacca tutti i servi e li porta al centro (90°)
-    inizializzaMotore();   // Attacca l'ESC e invia comando neutro (GAS_NEUTRO_us)
+    bloccaAvvioSeSensoriCriticiKO();
 
-    // Jingle avvio riuscito
-    tone(PIN_BUZZER, 800,  120); delay(170);
+    inviaMessaggioAvionica("Sensori critici inizializzati correttamente");
+}
+
+void bloccaAvvioSeSensoriCriticiKO() {
+    if (sensoriCriticiOK()) return;
+
+    digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
+    inviaMessaggioAvionica("[FATAL ERROR] Fallimento inizializzazione hardware critico. Sistema bloccato.");
+
+    while (1) {
+        tone(PIN_BUZZER, 2000, 300);
+        delay(400);
+    }
+}
+
+void setupAttuatori() {
+    inizializzaServo();
+    inizializzaMotore();
+}
+
+void finalizzaSetup() {
+    tone(PIN_BUZZER, 800, 120);  delay(170);
     tone(PIN_BUZZER, 1200, 120); delay(170);
     tone(PIN_BUZZER, 1800, 200); delay(350);
 
     digitalWrite(PIN_LED_ROSSO_ALARM, HIGH);
     digitalWrite(PIN_LED_VERDE_GPS, HIGH);
     digitalWrite(PIN_LED_BLU_PID, HIGH);
-    delay(1000);   // Tiene tutti i LED accesi 1 s
+    delay(1000);
     digitalWrite(PIN_LED_ROSSO_ALARM, LOW);
     digitalWrite(PIN_LED_VERDE_GPS, LOW);
     digitalWrite(PIN_LED_BLU_PID, LOW);
 
-    TEMPO_PID_PRECEDENTE_ms = millis();   // Riferimento temporale per il primo calcolo PID
-    TEMPO_BATTERIA_PRECEDENTE_ms = millis();
-    inviaMessaggioAvionica("\n  >> SISTEMA PRONTO AL VOLO\n");
+    G_tempo_pid_precedente_ms = millis();
+    G_tempo_batteria_precedente_ms = millis();
+
+    inviaMessaggioAvionica("SISTEMA PRONTO AL VOLO");
     delay(500);
 }
 
-// Collega i 4 servocomandi ai rispettivi pin e li porta tutti alla posizione centrale (90°)
+bool calibrazioneConsentita() {
+    // In volo normale la calibrazione e' bloccata.
+    // Dopo uno schianto e con sistema bloccato e' consentita per il recupero.
+    return !B_drone_in_volo || B_schianto_bloccato;
+}
+
+bool calibraDopoSchianto() {
+    if (!calibrazioneConsentita()) return false;
+
+    scriviMotore(GAS_NEUTRO_us);
+
+    bool b_imu_ok = calibraIMU();
+    bool b_baro_ok = calibraBarometro();
+    bool b_pitot_ok = calibraPitot();
+
+    resettaPID();
+
+    return b_imu_ok && b_baro_ok && b_pitot_ok;
+}
+
+void setup() {
+    setupComunicazioni();
+    setupSegnalazioni();
+    setupSensori();
+    setupAttuatori();
+    finalizzaSetup();
+}
+
 void inizializzaServo() {
     inviaMessaggioAvionica("Inizializzazione servi in corso...");
     servoInternoSX.attach(PIN_INT_SX);
@@ -2088,200 +2730,386 @@ void inizializzaServo() {
     servoEsternoDX.write(CENTRO_SERVO_deg);
 }
 
-// Collega l'ESC del motore e invia il comando neutro
+
+// Collega l'ESC alla Teensy e lo porta subito al comando neutro.
 void inizializzaMotore() {
     inviaMessaggioAvionica("Inizializzazione motore in corso...");
+
+    // Colleghiamo l'oggetto Servo al pin dell'ESC.
     motore.attach(PIN_MOTORE);
-    inviaMessaggioAvionica("Motore inizializzato. Comando neutro inviato (GAS_NEUTRO_us).");
-    motore.writeMicroseconds(GAS_NEUTRO_us);
+
+    // Tutte le scritture fisiche del motore passano da scriviMotore().
+    scriviMotore(GAS_NEUTRO_us);
+
+    inviaMessaggioAvionica("Motore inizializzato al neutro");
 }
 
-void loop()
-{
+
+// UNICO punto del programma che chiama motore.writeMicroseconds().
+// Se in futuro vuoi aggiungere un clamp, un log o un controllo hardware,
+// lo devi fare soltanto qui.
+void scriviMotore(int gas_us) {
+    // Il comando non puo' uscire dal range previsto dall'ESC.
+    int gasLimitato_us =
+        constrain(gas_us, GAS_NEUTRO_us, GAS_MASSIMO_us);
+
+    // Questa e' l'unica scrittura fisica verso l'ESC.
+    motore.writeMicroseconds(gasLimitato_us);
+}
+
+// ============================================================
+// STATO SENSORI E LOOP MODULARE
+// ============================================================
+
+void inviaDiagnosticaSensori() {
+    inviaMessaggioAvionica(
+        "SENSORI: IMU=" + String(B_BNO055_OK ? "OK" : "KO") +
+        " BARO=" + String(B_BMP390_OK ? "OK" : "KO") +
+        " LIDAR=" + String(B_LIDAR_OK ? "OK" : "KO") +
+        " OTTICO=" + String(B_PMW3901_OK ? "OK" : "KO") +
+        " PITOT=" + String(B_PITOT_OK ? "OK" : "KO") +
+        " GPS=" + String(B_GPS_OK ? "OK" : "KO") +
+        " INA219=" + String(B_INA219_OK ? "OK" : "KO")
+    );
+}
+
+void aggiornaStatoSensori() {
+    static bool b_prima_esecuzione = true;
+
+    static bool b_imu_precedente = false;
+    static bool b_baro_precedente = false;
+    static bool b_lidar_precedente = false;
+    static bool b_ottico_precedente = false;
+    static bool b_pitot_precedente = false;
+    static bool b_gps_precedente = false;
+    static bool b_ina_precedente = false;
+
+    B_INA219_OK = B_INA219_MOTORE_OK && B_INA219_TEENSY_OK &&
+                  B_INA219_INT_SX_OK && B_INA219_INT_DX_OK &&
+                  B_INA219_EST_SX_OK && B_INA219_EST_DX_OK;
+
+    if (b_prima_esecuzione) {
+        b_imu_precedente = B_BNO055_OK;
+        b_baro_precedente = B_BMP390_OK;
+        b_lidar_precedente = B_LIDAR_OK;
+        b_ottico_precedente = B_PMW3901_OK;
+        b_pitot_precedente = B_PITOT_OK;
+        b_gps_precedente = B_GPS_OK;
+        b_ina_precedente = B_INA219_OK;
+        b_prima_esecuzione = false;
+    } else {
+        if (B_BNO055_OK != b_imu_precedente)
+            inviaMessaggioAvionica(B_BNO055_OK ? "IMU tornata operativa" : "ATTENZIONE: IMU non affidabile");
+        if (B_BMP390_OK != b_baro_precedente)
+            inviaMessaggioAvionica(B_BMP390_OK ? "Barometro tornato operativo" : "ATTENZIONE: barometro non affidabile");
+        if (B_LIDAR_OK != b_lidar_precedente)
+            inviaMessaggioAvionica(B_LIDAR_OK ? "LIDAR tornato operativo" : "ATTENZIONE: LIDAR non affidabile");
+        if (B_PMW3901_OK != b_ottico_precedente)
+            inviaMessaggioAvionica(B_PMW3901_OK ? "Flusso ottico operativo" : "ATTENZIONE: flusso ottico non disponibile");
+        if (B_PITOT_OK != b_pitot_precedente)
+            inviaMessaggioAvionica(B_PITOT_OK ? "Pitot tornato operativo" : "ATTENZIONE: Pitot non affidabile");
+        if (B_GPS_OK != b_gps_precedente)
+            inviaMessaggioAvionica(B_GPS_OK ? "GPS tornato operativo" : "ATTENZIONE: GPS non affidabile");
+        if (B_INA219_OK != b_ina_precedente)
+            inviaMessaggioAvionica(B_INA219_OK ? "INA219 tutti operativi" : "ATTENZIONE: uno o piu INA219 non affidabili");
+
+        b_imu_precedente = B_BNO055_OK;
+        b_baro_precedente = B_BMP390_OK;
+        b_lidar_precedente = B_LIDAR_OK;
+        b_ottico_precedente = B_PMW3901_OK;
+        b_pitot_precedente = B_PITOT_OK;
+        b_gps_precedente = B_GPS_OK;
+        b_ina_precedente = B_INA219_OK;
+    }
+
+    if (B_forza_invio_diagnostica) {
+        inviaDiagnosticaSensori();
+        B_forza_invio_diagnostica = false;
+    }
+}
+
+void gestisciInizioCiclo() {
     comandiDaTerra();
     gestisciAlimentazione();
     gestisciSchianto();
     verificaDroneInVolo();
+}
 
-    // 1. Lettura GPS (accumulo caratteri seriali)
+
+// Aggiorna tutti i sensori nell'ordine corretto.
+// Questa funzione non fa controlli di volo: si occupa soltanto di acquisire
+// e preparare i dati che verranno usati dopo.
+void aggiornaSensori() {
+    // Prima svuotiamo la seriale GPS nel parser TinyGPS++.
     while (GPS_SERIAL.available() > 0) {
         gps.encode(GPS_SERIAL.read());
     }
 
+    // Controlliamo lo stato dei quattro servi.
     diagnosticaServi();
 
-    // 2. IMU — lettura angoli reali (pitch/roll con offset di tara sottratto)
-    sensors_event_t event;
-    giroscopio.getEvent(&event);
-    float pitch_deg = event.orientation.y - OFFSET_PITCH_deg;
-    float roll_deg  = event.orientation.z - OFFSET_ROLL_deg;
-    float yaw_deg   = event.orientation.x;   // Yaw reale SENZA sottrarre OFFSET_YAW_deg (calcolato ma non usato qui)
-    // Normalizzazione angolo nel range [0, 360)
-    if (yaw_deg < 0.0f) {
-        yaw_deg += 360.0f;
-    } else if (yaw_deg >= 360.0f) {
-        yaw_deg -= 360.0f;
-    }
+    // Leggiamo l'assetto e aggiorniamo G_pitch/G_roll/G_yaw.
+    leggiIMU();
 
-    aggiornaDiagnosticaIMU();   // Aggiorna i livelli di calibrazione IMU (0-3) per diagnostica/telemetria
+    // Leggiamo lo stato di calibrazione interna del BNO055.
+    aggiornaDiagnosticaIMU();
 
-    // 3. Temperatura motore/ESC/esterna
+    // Sensori di temperatura.
     leggiTemperatura();
 
-    // 4. Pitot — velocità ARIA (nessun fallback su altre velocità)
-    leggiPitot();
-
-    // 5. GPS — velocità al SUOLO grezza (Ground Speed)
-    // FIX: rinominata da gps() ad aggiornaGPS() (collisione col nome dell'oggetto TinyGPSPlus gps)
+    // GPS.
     aggiornaGPS();
 
-    // 6. Barometro — altitudine relativa, pressione, temperatura aria
+    // Ordine importante:
+    // 1. barometro
+    // 2. densita' aria
+    // 3. Pitot
+    // Il Pitot ha bisogno della densita' dell'aria aggiornata.
     leggiBarometro();
+    aggiornaDensitaAria();
+    leggiPitot();
 
-    aggiornaDensitaAria(PRESSIONE_BARO_Pa, TEMPERATURA_FUSOLIERA_C);
+    // Quota.
     aggiornaLidar();
-    selezionaAltitudine();                    // metri (m)
-    leggiVelocitaOttica(yaw_deg);              // m/s
-    aggiornaVelocitaSuolo(velocitaSuoloGps_ms); // m/s
-    stimaVento(yaw_deg);                       // m/s e direzione (0-360°)
-    aggiornaNavigazione(yaw_deg);
+    selezionaAltitudine();
+    aggiornaVelocitaVerticale();
 
-    // 7. PREPARAZIONE DATI MOTORE — sceglie velocità target e gas di base in base alla distanza dal target
-    float targetVelocita_kmh = 0.0f;
-    int gasDiBase_us = 0;
-    static int fasciaTargetPrecedente = -1;
-    if (DISTANZA_TARGET_m > DISTANZA_FRENATA_m) {
-        if (fasciaTargetPrecedente != 1) {
-            inviaMessaggioAvionica("Target lontano: velocita' crociera");
-            fasciaTargetPrecedente = 1;
-        }
-        targetVelocita_kmh = VELOCITA_CROCIERA_kmh;
-        gasDiBase_us = GAS_CROCIERA_us;
-    } else {
-        if (fasciaTargetPrecedente != 0) {
-            inviaMessaggioAvionica("Target vicino: velocita' avvicinamento");
-            fasciaTargetPrecedente = 0;
-        }
-        targetVelocita_kmh = VELOCITA_AVVICINAMENTO_kmh;
-        gasDiBase_us = GAS_AVVICINAMENTO_us;
-    }
-
-    int correzionePitch_deg = 0;
-    int correzioneRoll_deg  = 0;
-    int comandoGasFinale_us = GAS_NEUTRO_us;
-
-    // 1 = Manuale, 2 = Auto, 3 = Failsafe
-    if (ricevente.read(&canaliRC[0], &failsafe, &pacchettoPerso)) {   // Se è arrivato un nuovo pacchetto SBUS valido
-        // Sblocco emergenza: se in stato di schianto rilevato, il canale 5 (indice 4) sotto 992 lo resetta manualmente
-        if (statoSchiantoRilevato && canaliRC[4] < 992) {
-            statoSchiantoRilevato = false;
-            schiantoBloccato = false;
-            droneInVolo = false;
-            inizializzaServo();   // Ricentra e riattacca i servi
-
-            statoPrecedenteInterni = true;
-            statoPrecedenteEsterni = true;
-
-            noTone(PIN_BUZZER);
-            tone(PIN_BUZZER, 1000, 100);
-            delay(150);
-            tone(PIN_BUZZER, 1500, 100);
-            inviaMessaggioAvionica("!!! SBLOCCO EMERGENZA ESEGUITO DA RADIO !!! Servi Riarmati e centrati.");
-        }
-
-        // Canale 5 (indice 4) sceglie la modalità di volo: <992 = Manuale, >=992 = Auto (solo se già in volo e non in schianto)
-        if (canaliRC[4] < 992) {
-            global_modalitaVolo = 1;
-        } else {
-            if (droneInVolo && statoSchiantoRilevato == false) {
-                global_modalitaVolo = 2;
-            }
-        }
-    }
-
-    int statoAttuale;
-    static int ultimoStatoStampato = 0;
-    if (failsafe) {
-        statoAttuale = 3;   // Stato "3" = failsafe, per la sola logica di stampa/reset PID qui sotto
-    } else {
-        statoAttuale = global_modalitaVolo;
-    }
-
-    // RESET PID AL CAMBIO DI MODALITÀ — azzera gli integrali/derivate quando si passa da uno stato all'altro
-    static int modalitaPrecedente = 1;
-    if (statoAttuale != modalitaPrecedente) {
-        resettaPID();
-        inviaMessaggioAvionica("Cambio modalità di volo: reset PID , azzerati integrali/derivate");
-        modalitaPrecedente = statoAttuale;
-    }
-
-    if (!schiantoBloccato && global_modalitaVolo == 1 && !failsafe) {
-        // MODALITÀ MANUALE: mappa i canali RC grezzi direttamente sui comandi
-        // Gas: da 172-1811 (range SBUS) a GAS_NEUTRO_us-GAS_MASSIMO_us, vincolato ai limiti meccanici motore
-        comandoGasFinale_us = constrain(map(canaliRC[2], 172, 1811, GAS_NEUTRO_us, GAS_MASSIMO_us), GAS_NEUTRO_us, GAS_MASSIMO_us);
-        correzioneRoll_deg  = constrain(map(canaliRC[0], 172, 1811, -MAX_ROLL_deg,   MAX_ROLL_deg),   -MAX_ROLL_deg,  MAX_ROLL_deg);
-        correzionePitch_deg = constrain(map(canaliRC[1], 172, 1811,  MAX_PITCH_deg, -MAX_PITCH_deg),  -MAX_PITCH_deg, MAX_PITCH_deg);
-        if (statoAttuale != ultimoStatoStampato) {
-            inviaMessaggioAvionica("Volo: MANUALE (Comandi diretti dal radiocomando)");
-            ultimoStatoStampato = statoAttuale;
-        }
-    } else if (!schiantoBloccato && (global_modalitaVolo == 2 || failsafe) && (droneInVolo || failsafe)) {
-        // MODALITÀ AUTO o FAILSAFE: il PID calcola i comandi automaticamente
-        if (failsafe) {
-            if (statoAttuale != ultimoStatoStampato) {
-                inviaMessaggioAvionica("FAILSAFE ATTIVO! direzione a target automatico!");
-                ultimoStatoStampato = statoAttuale;
-            }
-        } else {
-            if (statoAttuale != ultimoStatoStampato) {
-                inviaMessaggioAvionica("Volo: GPS AUTO (Il PID comanda)");
-                ultimoStatoStampato = statoAttuale;
-            }
-        }
-        // Chiamata al PID: quota target (m), roll target (°), pitch/roll reali (°), velocità aria attuale/target (km/h), gas di base (us)
-        calcolaPID(ALTITUDINE_TARGET_m, ROLL_TARGET_deg, pitch_deg, roll_deg,
-                   VELOCITA_ARIA_ms * 3.6f, targetVelocita_kmh, gasDiBase_us,
-                   correzionePitch_deg, correzioneRoll_deg, comandoGasFinale_us);
-    }
-
-    // FIX (obiettivo 3): applicazione del kill switch software STOP_MOTORE. Va fatta qui,
-    // subito prima delle scritture finali sul motore, così sovrascrive sia il calcolo manuale
-    // che quello automatico/PID senza toccarne la logica interna.
-    if (motoreDisabilitatoDaTerra) {
-        comandoGasFinale_us = GAS_NEUTRO_us;
-        inviaMessaggioAvionica("Comando STOP_MOTORE ricevuto da terra: motore disabilitato impostatoa GAS_NEUTRO_us");
-    }
-
-    if (statoSchiantoRilevato) {
- 
-        comandoGasFinale_us = GAS_NEUTRO_us;
-        motore.writeMicroseconds(comandoGasFinale_us);
-    } else {
-        gestisciAllarmi();   // Aggiorna i LED di stato in base ad allarmi/GPS/modalità
-        applicaMixer4Servi(correzionePitch_deg, correzioneRoll_deg);
-
-        GAS_LIMITE_TERMICO_us = gasMaxTermico();
-        // FIX (obiettivo 2): la limitazione termica del gas non veniva mai segnalata a terra
-        // quando entrava/usciva in funzione. Edge detection sullo stato precedente per notificare
-        // solo il cambiamento, non ogni ciclo.
-        static bool limitazioneTermicaPrecedente = false;
-        if (comandoGasFinale_us > GAS_LIMITE_TERMICO_us && limitazione_termica_gas) {
-            comandoGasFinale_us = GAS_LIMITE_TERMICO_us;   // Applica il taglio termico se abilitato
-            limitazioneTermicaAttiva = true;
-        } else {
-            limitazioneTermicaAttiva = false;
-        }
-        if (limitazioneTermicaAttiva != limitazioneTermicaPrecedente) {
-            inviaMessaggioAvionica(limitazioneTermicaAttiva ? "Limitazione termica gas ATTIVA (motore/ESC in surriscaldamento)"
-                                                              : "Limitazione termica gas rientrata");
-            limitazioneTermicaPrecedente = limitazioneTermicaAttiva;
-        }
-        motore.writeMicroseconds(comandoGasFinale_us);
-    }
-
-    inviaTelemetria(
-        pitch_deg, roll_deg, yaw_deg,
-        VELOCITA_ARIA_ms * 3.6f,
-        VELOCITA_SUOLO_ms * 3.6f,
-        correzionePitch_deg, correzioneRoll_deg, comandoGasFinale_us);
+    // Velocita' al suolo.
+    leggiVelocitaOttica();
+    aggiornaVelocitaSuolo();
 }
+
+
+// Sceglie velocita' target e gas base in funzione della distanza dal waypoint.
+// I risultati vengono salvati nello stato globale del controllo.
+void scegliTargetVelocita() {
+    // Memorizza la fascia precedente soltanto per evitare messaggi ripetuti.
+    static int fasciaPrecedente = -1;
+
+    // Target lontano: crociera.
+    if (G_distanza_target_m > DISTANZA_FRENATA_m) {
+        G_target_velocita_kmh = G_velocita_crociera_kmh;
+        G_gas_base_us = GAS_CROCIERA_us;
+
+        if (fasciaPrecedente != 1) {
+            inviaMessaggioAvionica("Target lontano: velocita' crociera");
+            fasciaPrecedente = 1;
+        }
+
+        return;
+    }
+
+    // Target vicino: avvicinamento.
+    G_target_velocita_kmh = G_velocita_avvicinamento_kmh;
+    G_gas_base_us = GAS_AVVICINAMENTO_us;
+
+    if (fasciaPrecedente != 0) {
+        inviaMessaggioAvionica("Target vicino: velocita' avvicinamento");
+        fasciaPrecedente = 0;
+    }
+}
+
+void aggiornaModalitaVoloDaRadio() {
+    bool b_pacchetto_perso = false;
+
+    if (!ricevente.read(&G_canali_rc[0], &B_failsafe, &b_pacchetto_perso)) return;
+
+    if (B_stato_schianto_rilevato && G_canali_rc[4] < 992) {
+        B_stato_schianto_rilevato = false;
+        B_schianto_bloccato = false;
+        B_drone_in_volo = false;
+
+        inizializzaServo();
+
+        noTone(PIN_BUZZER);
+        tone(PIN_BUZZER, 1000, 100);
+        delay(150);
+        tone(PIN_BUZZER, 1500, 100);
+
+        inviaMessaggioAvionica("SBLOCCO EMERGENZA ESEGUITO DA RADIO. Servi riarmati e centrati.");
+        inviaMessaggioAvionica("Dopo uno schianto e' possibile eseguire CALIBRA_POST_SCHIANTO da terra.");
+    }
+
+    if (G_canali_rc[4] < 992) {
+        G_modalita_volo = 1;
+    } else if (B_drone_in_volo && !B_stato_schianto_rilevato) {
+        G_modalita_volo = 2;
+    }
+}
+
+
+// Decide chi comanda il drone in questo ciclo:
+// manuale, PID automatico oppure protezione dell'inviluppo di volo.
+void calcolaComandiVolo() {
+    // Aggiorniamo velocita' target e gas base.
+    scegliTargetVelocita();
+
+    // Partiamo sempre da comandi neutri.
+    G_comando_pitch_deg = 0;
+    G_comando_roll_deg = 0;
+    G_comando_gas_us = GAS_NEUTRO_us;
+
+    // Stato 3 viene usato solo internamente per distinguere il failsafe.
+    int statoAttuale =
+        B_failsafe ? 3 : G_modalita_volo;
+
+    // Quando cambia modalita' cancelliamo la memoria dei PID.
+    static int statoPrecedente = -1;
+
+    if (statoAttuale != statoPrecedente) {
+        resettaPID();
+        inviaMessaggioAvionica("Cambio modalita' di volo: PID azzerati");
+        statoPrecedente = statoAttuale;
+    }
+
+
+    // ========================================================
+    // VOLO MANUALE
+    // ========================================================
+
+    if (!B_schianto_bloccato &&
+        G_modalita_volo == 1 &&
+        !B_failsafe) {
+
+        // Gas dal radiocomando.
+        G_comando_gas_us =
+            constrain(
+                map(G_canali_rc[2],
+                    172, 1811,
+                    GAS_NEUTRO_us, GAS_MASSIMO_us),
+                GAS_NEUTRO_us,
+                GAS_MASSIMO_us
+            );
+
+        // Roll dal radiocomando.
+        G_comando_roll_deg =
+            constrain(
+                map(G_canali_rc[0],
+                    172, 1811,
+                    -MAX_ROLL_deg, MAX_ROLL_deg),
+                -MAX_ROLL_deg,
+                MAX_ROLL_deg
+            );
+
+        // Pitch dal radiocomando.
+        G_comando_pitch_deg =
+            constrain(
+                map(G_canali_rc[1],
+                    172, 1811,
+                    MAX_PITCH_deg, -MAX_PITCH_deg),
+                -MAX_PITCH_deg,
+                MAX_PITCH_deg
+            );
+    }
+
+
+    // ========================================================
+    // VOLO AUTOMATICO / FAILSAFE
+    // ========================================================
+
+    else if (!B_schianto_bloccato &&
+             (G_modalita_volo == 2 || B_failsafe) &&
+             (B_drone_in_volo || B_failsafe)) {
+
+        // Prima del PID controlliamo l'inviluppo di volo.
+        int protezione = verificaProtezioniVolo();
+
+        // Se tutto e' normale usiamo il PID classico.
+        if (protezione == PROTEZIONE_NESSUNA) {
+            calcolaPID();
+        }
+        // Se esiste una condizione critica la safety prende il controllo.
+        else {
+            calcolaComandiProtezione(protezione);
+        }
+    }
+
+
+    // ========================================================
+    // KILL SWITCH SOFTWARE
+    // ========================================================
+
+    // Il kill switch ha priorita' su qualsiasi comando calcolato sopra.
+    if (B_motore_disabilitato_da_terra) {
+        G_comando_gas_us = GAS_NEUTRO_us;
+    }
+}
+
+
+// Applica realmente i comandi a servi e motore.
+// Tutti i limiti finali vengono applicati qui, immediatamente prima dell'hardware.
+void aggiornaAttuatori() {
+    // Dopo uno schianto il motore deve restare neutro.
+    if (B_stato_schianto_rilevato) {
+        G_comando_gas_us = GAS_NEUTRO_us;
+        scriviMotore(G_comando_gas_us);
+        return;
+    }
+
+    // Aggiorniamo LED/allarmi.
+    gestisciAllarmi();
+
+    // Il mixer trasforma pitch/roll nei quattro angoli servo.
+    applicaMixer4Servi();
+
+    // Calcoliamo il massimo gas consentito dalle temperature.
+    G_gas_limite_termico_us = gasMaxTermico();
+
+    // Stato precedente soltanto per non ripetere il messaggio.
+    static bool b_limitazione_precedente = false;
+
+    // Se la protezione termica e' abilitata, limitiamo il gas.
+    if (B_limitazione_termica_abilitata &&
+        G_comando_gas_us > G_gas_limite_termico_us) {
+
+        G_comando_gas_us = G_gas_limite_termico_us;
+        B_limitazione_termica_attiva = true;
+    } else {
+        B_limitazione_termica_attiva = false;
+    }
+
+    // Messaggio soltanto quando la limitazione entra o esce.
+    if (B_limitazione_termica_attiva != b_limitazione_precedente) {
+        inviaMessaggioAvionica(
+            B_limitazione_termica_attiva
+                ? "Limitazione termica gas ATTIVA"
+                : "Limitazione termica gas rientrata"
+        );
+
+        b_limitazione_precedente = B_limitazione_termica_attiva;
+    }
+
+    // UNICA chiamata che porta il comando finale all'ESC.
+    scriviMotore(G_comando_gas_us);
+}
+
+
+// Il loop descrive soltanto l'ordine logico del flight controller.
+// I dettagli sono nascosti nelle funzioni dedicate.
+void loop() {
+    // Comandi da terra, alimentazione, schianto e stato volo.
+    gestisciInizioCiclo();
+
+    // Acquisizione di tutti i sensori.
+    aggiornaSensori();
+
+    // Aggiorna i flag B_SENSOR_OK.
+    aggiornaStatoSensori();
+
+    // Elaborazioni derivate dai sensori.
+    stimaVento();
+    aggiornaNavigazione();
+
+    // Legge il radiocomando e decide manuale/automatico.
+    aggiornaModalitaVoloDaRadio();
+
+    // Calcola pitch, roll e gas.
+    calcolaComandiVolo();
+
+    // Scrive servi e motore.
+    aggiornaAttuatori();
+
+    // Invia lo stato alla stazione di terra.
+    inviaTelemetria();
+}
+
